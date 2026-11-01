@@ -105,6 +105,10 @@ compile_commands.json
 *.ninja
 
 # --- Diagnostics, captures, logs ---
+# Local screenshots created during Windows installation and PT-BR review.
+/windows-*.png
+/pt-br-*.png
+/current-controls.png
 /documentation/logs/
 *.log
 *.bmp

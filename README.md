@@ -1,92 +1,124 @@
-# Duke Nukem: Time to Kill - native PC recompilation
+# Duke Nukem: Time to Kill Recomp - Português do Brasil
 
-[![CI](https://github.com/MusicMonsterMod/duke-nukem-time-to-kill-recomp/actions/workflows/ci.yml/badge.svg)](https://github.com/MusicMonsterMod/duke-nukem-time-to-kill-recomp/actions/workflows/ci.yml)
-[![Listed on recomp.board](https://img.shields.io/badge/recomp.board-listed-c8102e?labelColor=1a1a1a)](https://recomp.fyi/game/duke-nukem-time-to-kill-ps1)
+Recompilação nativa de Duke Nukem: Time to Kill para PC, com interface em português do Brasil, controles modernizados de teclado e mouse e ajustes de compilação para Windows com Clang/LLVM-MinGW.
 
-Modernized play by default (WASD, mouse aim, and quality-of-life), with the faithful original game one flag away (`--vanilla`). **No retail game data is included.** You need your own USA SLUS-00583 disc. Europe/PAL (SLES-01515) is a different SKU and will not work.
+Este projeto deriva de [MusicMonsterMod/duke-nukem-time-to-kill-recomp](https://github.com/MusicMonsterMod/duke-nukem-time-to-kill-recomp). O histórico, a implementação e a documentação desse projeto foram preservados. A base desta versão é o commit `95a5471`. Esta não é uma tradução oficial dos detentores dos direitos do jogo.
 
-- [Game manual](GAME_MANUAL.md) - controls and player-facing behavior
-- [Documentation index](documentation/README.md) - engineering notes and evidence
-- [Current status](documentation/00-status.md)
-- [Modernization jobs](MODERNIZATION_JOBS.md) - the canonical backlog
-- [recomp.board listing](https://recomp.fyi/game/duke-nukem-time-to-kill-ps1) - our entry on the community board of who's recompiling what; it reads [`.recomp.json`](.recomp.json) daily
+**É necessário possuir uma cópia original USA, SLUS-00583.** Não são distribuídos disco, BIOS comercial, código gerado do jogo, executável compilado, fontes extraídas, saves ou cartões de memória. A edição europeia/PAL não é compatível com este build.
 
-The implementation is tracked under **[recomp/](recomp/)**: title source,
-controls, renderer integration, runtime patches, build tools and tests. Pinned
-upstream framework/UI sources are Git submodules. Our framework modifications
-are included in the complete tracked patch, applied automatically by the build.
-No ROM, generated game code, compiled game, player save or extracted retail art
-is distributed.
+## O que foi acrescentado
 
-## Build and play (Linux)
+- Cerca de 500 entradas de tradução: menus, configurações, ações dos controles, objetivos da campanha, itens e mensagens de salvar/carregar.
+- Composição de acentos e cedilha usando as fontes do jogo, sem alterar a imagem original do disco ou o formato dos pacotes de fontes.
+- Tradução apenas na apresentação. Chaves de configuração, comandos, atalhos e dados persistentes mantêm os identificadores originais.
+- Interface em inglês disponível com `DNTTK_LANGUAGE=en`.
+- Correção da declaração `dllexport` ao compilar os módulos de vídeo/geometria com Clang no Windows. A correção integra o patch de framework aplicado pelo build.
+- Otimização desativada apenas no arquivo gerado `SLUS_005.83_full_65.c`, no Windows com Clang, para evitar a demora excessiva de compilação dessa função. Os demais arquivos mantêm a otimização original. Essa exceção pode afetar o desempenho das rotinas desse bloco.
+- Arquivos `.cmd` para abrir os modos em português, inglês e Vanilla, e testes nativos da localização.
 
-```bash
-git clone --recurse-submodules https://github.com/MusicMonsterMod/duke-nukem-time-to-kill-recomp.git
-cd duke-nukem-time-to-kill-recomp
-python3 -m venv .venv
-.venv/bin/pip install -r recomp/requirements-local.txt
+As falas e os vídeos continuam no idioma original. Textos incorporados em imagens, nomes próprios e interfaces de diagnóstico podem permanecer em inglês. O catálogo cobre os objetivos da campanha, mas a campanha completa ainda não foi revisada visualmente em português.
+
+## Baixar o código completo
+
+Use Git com os submódulos. O download ZIP não preenche essas dependências.
+
+```powershell
+git clone --recurse-submodules https://github.com/lucasfreitas611/Duke-Nuken-Time-To-Kill-Recomp-PT-BR.git
+cd Duke-Nuken-Time-To-Kill-Recomp-PT-BR
 ```
 
-Install the compiler/CMake and graphics development prerequisites described in
-[build instructions](documentation/04-build-and-run.md). Put your owned USA
-SLUS-00583 dump in `game/` (a subfolder is fine): `.cue`/`.bin`, CloneCD
-`.img`/`.ccd`/`.sub`, or a raw MODE2/2352 image. **Everything in game/ except
-README.md is gitignored.** Then:
+Em uma cópia já existente, execute `git submodule update --init --recursive`.
+Coloque seu `.bin` e `.cue` em `game/`. O `.cue` deve apontar para o nome correto do `.bin`. Os originais são lidos para preparar uma cópia local em `recomp/disc/`.
 
-```bash
-.venv/bin/python recomp/tools/local/build.py --jobs 4
-python3 recomp/tools/local/run.py
+## Compilar no Windows
+
+Pré-requisitos: Python 3.11 ou superior, Git, CMake 3.20 ou superior, Ninja e um compilador C/C++ x64 compatível com MinGW. Esta versão foi compilada com o pacote portátil `cmake-clang-v1` do ecossistema PSXRecomp/RetComM (Clang/LLVM-MinGW, CMake, Ninja, SDL3 e zlib). Não misture um diretório de build configurado para MSVC com ferramentas MinGW.
+
+Se estiver usando esse pacote portátil, prepare a sessão do PowerShell abaixo. Substitua o caminho de exemplo pela pasta do seu pacote:
+
+```powershell
+$toolchain = 'C:\caminho\para\cmake-clang-v1'
+$env:RETCOMM_TOOLCHAIN_DIR = $toolchain
+$env:Path = "$toolchain\bin;" + $env:Path
+$env:CC = "$toolchain\bin\clang.exe"
+$env:CXX = "$toolchain\bin\clang++.exe"
+$env:ZLIB_ROOT = "$toolchain\deps"
+$env:SDL3_DIR = "$toolchain\deps\lib\cmake\SDL3"
 ```
 
-The game starts in Modernized. For the accepted quality target, use
-`python3 recomp/tools/local/run.py --frame-rate 120` (options save your
-preferences). `run.py --vanilla` plays the original game for one launch.
+Na raiz do repositório, com seu disco em `game/`:
 
-For an existing clone, run `git submodule update --init --recursive` first.
-Builds generate the game code locally from your disc. Research, generated code,
-build outputs, personal settings, captures and saves remain ignored. Fonts and
-HUD icons are extracted from your disc during the build; no Duke Nukem 3D art is
-used (see the build notes).
-Linux is the validated platform; Windows execution remains unverified.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r recomp/requirements-local.txt
+.\.venv\Scripts\python.exe recomp/tools/local/build.py --jobs 4
+```
 
-**D17A and D17B are accepted.** 120 FPS is the primary quality/regression target;
-180 FPS+ remains excellent high-refresh support, 240 FPS+ robustness/compatibility,
-and Unlimited stress/debug. There is no 120 FPS ceiling. See the
-[accepted baseline and remaining focused bugs](documentation/86-d17-acceptance-and-regression-baseline.md).
+O processo aplica os patches, valida o disco, gera o código do jogo e do OpenBIOS, prepara os recursos e compila o executável. Não é necessário fornecer um BIOS comercial para o caminho OpenBIOS usado neste build.
 
-## Credits
+Se o CMake selecionar um Python diferente do ambiente virtual, execute na pasta `recomp/`, após a geração inicial:
 
-- **[PSXRecomp](https://github.com/RetroPortingToolKit/psxrecomp)**, the
-  PlayStation static recompiler this port is built on, by Matthew Stanley (mstan)
-  and the RetroPortingToolkit team (PolyForm Noncommercial 1.0.0). Our framework
-  changes are in `recomp/patches/time-to-kill-accepted-source.patch`. The components it
-  credits, including PCSX-Redux's OpenBIOS (MIT) and libchdr (BSD-3-Clause), are
-  listed in its
-  [THIRD_PARTY_ATTRIBUTION.md](https://github.com/RetroPortingToolKit/psxrecomp/blob/main/THIRD_PARTY_ATTRIBUTION.md).
-- **[Alexbeav's PS1 Recomps](https://github.com/alexbeavs-ps1-ports/psxrecomp-ports)**
-  by Alexbeav (Alexandros Mandravillis): the PS1 recompilation ports and build kits
-  this project follows. Our `recomp/psxrecomp` submodule is pinned from Alexbeav's
-  PSXRecomp fork ([Alexbeav/psxrecomp](https://github.com/Alexbeav/psxrecomp)).
-- **[recomp-ui](https://github.com/RetroPortingToolKit/recomp-ui)**, the shared
-  launcher and in-game UI, by RetroPortingToolkit (MIT), pinned as `recomp/recomp-ui`.
-- **[3x5 Microfont](https://github.com/nimaid/microfont)** by nimaid (CC0 1.0):
-  the Modernized inventory switcher digits. It is kept with its licence in
-  `recomp/assets/ui/fonts/microfont/`.
-- **Original UI art** by MusicMonsterMod: 17 distinct designs covering the
-  inventory selection frame, crosshair, mission-item icons (keys/keycards,
-  three energy crystals, notes/paper and Family Jewel), medkit, steroids,
-  invincibility, invisibility, Double Duke, challenge-item icon and used-item
-  tick. [UI art inventory](recomp/assets/ui/README.md).
-- **Custom Bio Mask first-person mesh** by MusicMonsterMod.
-- **Piano interpolation of "Grabbag" by Lee Jackson**, performed by
-  MusicMonsterMod, for the playable saloon piano.
-- **Bio Mask audio**: adapted from [Gas Decompression](https://pixabay.com/sound-effects/film-special-effects-gas-decompression-329819/)
-  by **CreatorsHome**, under the Pixabay Content License.
-- **Night-vision audio**: adapted from [Old camera flash](https://pixabay.com/sound-effects/technology-old-camera-flash-6800/)
-  by **MichelleGrobler** (Freesound), distributed through **freesound_community**
-  on Pixabay under the Pixabay Content License.
-  [Audio source, license and processing notes](recomp/assets/audio/README.md).
+```powershell
+$pythonBuild = (Resolve-Path '..\.venv\Scripts\python.exe').Path
+cmake --preset local-dev "-DPython3_EXECUTABLE=$pythonBuild"
+cmake --build --preset local-dev --parallel 4
+```
 
-Third-party licenses remain applicable: the title scaffold has its license in
-`recomp/LICENSE`; framework/UI dependencies retain their own licenses. The
-root MIT notice does not relicense those dependencies.
+Se o `ccache` impedir o início da compilação no seu ambiente, desative somente esse cache na configuração local, também em `recomp/`:
+
+```powershell
+cmake --preset local-dev '-DCMAKE_C_COMPILER_LAUNCHER=' '-DCMAKE_CXX_COMPILER_LAUNCHER='
+cmake --build --preset local-dev --parallel 4
+```
+
+Mantenha `recomp/build-local/cache/`, os pacotes de recursos e os demais arquivos gerados junto do executável. Eles não são distribuídos neste repositório.
+
+## Jogar
+
+Depois de compilar, abra um destes arquivos na raiz do repositório:
+
+| Arquivo | Modo |
+| --- | --- |
+| `Jogar Duke TTK.cmd` | Modernizado, interface PT-BR |
+| `Jogar Duke TTK em Ingles.cmd` | Modernizado, interface em inglês |
+| `Jogar Duke TTK Original.cmd` | Vanilla, comportamento original |
+
+Os arquivos procuram o Python de `.venv/`, o ambiente virtual na pasta superior quando presente e, por último, o Python do PATH. Para usar outro local de toolchain, defina `RETCOMM_TOOLCHAIN_DIR`.
+
+Também é possível iniciar pelo launcher Python:
+
+```powershell
+.\.venv\Scripts\python.exe recomp/tools/local/run.py
+```
+
+WASD movimenta; o mouse controla a câmera; o botão esquerdo atira; Espaço pula; E interage; Ctrl agacha; Esc pausa. Enter e as setas navegam pelos menus, F11 alterna a tela cheia e P alterna a perspectiva nas situações suportadas. Clique na janela para dar foco; retomar pelo menu de pausa recaptura o mouse durante a partida.
+
+Saves e preferências ficam nas pastas locais ignoradas pelo Git. Use o launcher: abrir o executável diretamente não configura todos os recursos modernizados.
+
+## Validação desta versão
+
+Em Windows, foram verificados: compilação do executável e dos módulos de vídeo e geometria; inicialização com OpenGL; tela de título e menus; tradução visível no menu principal e na tela de vídeo. Os testes nativos de localização verificam tradução, retorno ao inglês, composição dos acentos e quebra de linha. Isso não equivale à validação de toda a campanha, todos os controles ou todas as telas. O projeto original tem Linux como plataforma validada.
+
+Para executar os testes de localização após preparar o disco e os recursos:
+
+```powershell
+cmake --build recomp/build-local --target ttk-pt-br-test --parallel 4
+.\recomp\build-local\ttk-pt-br-test.exe .\recomp\build-local\ttk-fonts.pack
+```
+
+## Documentação e próximos ajustes
+
+- [README original, preservado](README_UPSTREAM.md)
+- [Índice da documentação técnica original](documentation/README.md)
+- [Manual de controles e recursos original](GAME_MANUAL.md)
+- [Instruções originais de build](documentation/04-build-and-run.md)
+- [Estado documentado do projeto original](documentation/00-status.md)
+- [Histórico de tarefas e melhorias original](MODERNIZATION_JOBS.md)
+- [Catálogo PT-BR](recomp/src/ttk/pt_br.inc)
+- [Localização e composição dos caracteres](recomp/src/ttk/localization.h)
+
+Os documentos originais registram o trabalho e os testes do autor original; não representam testes adicionais realizados neste fork. Os ajustes locais do framework ficam em `recomp/patches/time-to-kill-accepted-source.patch`. Os submódulos continuam nas revisões públicas fixadas pelo projeto.
+
+## Créditos e licenças
+
+Implementação e modernização originais por MusicMonsterMod, sobre PSXRecomp, os forks e as bibliotecas identificados no [README original](README_UPSTREAM.md). Os créditos, avisos e licenças foram preservados. A licença MIT da raiz não substitui as licenças do framework, das bibliotecas ou do jogo. Os direitos do jogo e dos seus dados continuam com os respectivos titulares.

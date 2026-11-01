@@ -10465,3 +10465,18 @@ index 00000000..2277ace2
 + subprocess.run([os.environ.get('CC','cc'),'-O2',str(p/'test.c'),'-o',str(p/'test')],check=True)
 + subprocess.run([str(p/'test')],check=True)
 +print('render-worker deadline publication and boundaries: passed')
+diff --git a/tools/compile_overlays.py b/tools/compile_overlays.py
+index bbb9216b..c722cb97 100644
+--- a/tools/compile_overlays.py
++++ b/tools/compile_overlays.py
+@@ -2090,6 +2090,10 @@ def patch_generated_c(src: str, load_addr: int, size: int) -> str:
+     src = re.sub(r'^void func_([0-9A-Fa-f]{8})\(CPUState\* cpu\)$',
+                  add_export, src, flags=re.MULTILINE)
+ 
++    # Clang on Windows requires dllexport on the first declaration, including
++    # the declarations in cpu_state.h and psx_cycles.h included above.
++    src = ('#ifdef _WIN32\n__declspec(dllexport) void overlay_flush_cycles(void);\n'
++           '#endif\n') + src
+     return src
+ 
+ 

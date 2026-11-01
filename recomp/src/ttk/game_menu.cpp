@@ -74,6 +74,7 @@
 #include "savestate.h"
 #include "savestate_slots.h"
 #include "ttk_font.h"
+#include "localization.h"
 #include "inventory_hud.h"
 #include <algorithm>
 #include <array>
@@ -945,6 +946,7 @@ void key_pressed(int code) {
         for(int b=0;code && b<action_count;++b) if(b!=a && codes[b]==code) {
             codes[b]=old==SDL_SCANCODE_C && b!=holster ? 0 : old; // C stays the holster's
             key_note=key_said(code)+" WAS "+action_label(b)+": "+(codes[b] ? "THAT IS ON "+key_said(codes[b])+" NOW" : "THAT HAS NO KEY NOW");
+            if(ptbr::enabled())key_note=key_said(code)+" ERA "+ptbr::translate(action_label(b))+": "+(codes[b]?"AGORA: "+key_said(codes[b]):"SEM TECLA");
         }
         codes[a]=code;
         input_set_binding_codes(codes);
@@ -1507,6 +1509,7 @@ bool game_menu_input(const MenuKeys& keys) {
 
 namespace {
 // ---- drawing: the original's own calls, on one saved stack and scratchpad ----
+thread_local bool localized_call=false;
 struct Guest {
     CPUState* source;uint32_t top,text,base;bool ok=true;
     uint32_t saved[1024],scratch[256];
@@ -1524,7 +1527,10 @@ struct Guest {
         cpu.gpr[4]=a0;cpu.gpr[5]=a1;cpu.gpr[6]=a2;cpu.gpr[7]=a3;
         psx_mod_write_word(top-0x100+16,s16);psx_mod_write_word(top-0x100+20,s20);psx_mod_write_word(top-0x100+24,s24);
         psx_mod_host_call_begin(); // D19J: no savestate inside our call
+        const bool previous=localized_call;
+        if(address==fn_text)localized_call=true;
         psx_dispatch_call(&cpu,address,sentinel);
+        localized_call=previous;
         psx_mod_host_call_end();
         ok=cpu.pc==0 && !g_psx_call_bail;
         return cpu.gpr[2];
@@ -1534,9 +1540,13 @@ struct Guest {
         for(;s[i] && i<100;++i) psx_mod_write_byte(text+i,(uint8_t)s[i]);
         psx_mod_write_byte(text+i,0);
     }
-    static bool drawn_char(char c,uint32_t flags) {return c=='"' || ((c=='!' || c=='%') && quote_font(flags)==0);}
+    static bool drawn_char(char c,uint32_t flags) {return ptbr::accent((unsigned char)c) || c=='"' || ((c=='!' || c=='%') && quote_font(flags)==0);}
     static bool has_drawn(const char* s,uint32_t flags) {for(;*s;++s) if(drawn_char(*s,flags)) return true;return false;}
     void say(const char* s,int x,int y,uint32_t flags) {
+        const std::string localized=ptbr::glyphs(ptbr::translate(s));s=localized.c_str();
+        say_raw(s,x,y,flags);
+    }
+    void say_raw(const char* s,int x,int y,uint32_t flags) {
         if(has_drawn(s,flags)) {say_quoted(s,x,y,flags);return;}
         put(s);call(fn_text,text,(uint32_t)x,(uint32_t)y,flags);
     }
@@ -1558,7 +1568,32 @@ struct Guest {
             if(!run.empty()) {const int rw=width(run.c_str(),flags&0x300);put(run.c_str());call(fn_text,text,(uint32_t)x,(uint32_t)y,left);x+=rw;run.clear();}
             if(!*p) break;
             if(*p=='"') {say_quote(x,y,left,open);x+=quote_width(flags);open=!open;}
-            else {say_runs(*p,x,y,left);x+=drawn_width(*p);}
+            else if(ptbr::accent((unsigned char)*p)) {
+                const char base[2]={char(ptbr::base((unsigned char)*p)),0};
+                put(base);call(fn_text,text,(uint32_t)x,(uint32_t)y,left);
+                say_accent((unsigned char)*p,x,y,left);x+=width(base,flags&0x300);
+            } else {say_runs(*p,x,y,left);x+=drawn_width(*p);}
+        }
+    }
+    void say_accent(unsigned char c,int x,int y,uint32_t flags) {
+        const char* shape=ptbr::accent(c);
+        const char letter[2]={char(ptbr::base(c)),0};
+        const int mx=x+(width(letter,flags&0x300)-5)/2;
+        const int my=y+(c==0xc7?(quote_font(flags)?16:10):-3);
+        for(int row=0;row<3;++row)for(int col=0;col<5;) {
+            if(shape[row*5+col]!='1'){++col;continue;}
+            const int start=col;while(col<5 && shape[row*5+col]=='1')++col;
+            call(fn_glyph,'I',(uint32_t)mx,(uint32_t)my,flags);
+            if(!ok)return;
+            const uint32_t p=psx_mod_read_word(glyph_next)-glyph_size;
+            const uint8_t u=psx_mod_read_byte(p+0xc)+3,v=psx_mod_read_byte(p+0xd)+2;
+            const int dx=(int16_t)psx_mod_read_half(p+8)-mx,dy=(int16_t)psx_mod_read_half(p+0xa)-my;
+            for(uint32_t k=0;k<4;++k) {
+                psx_mod_write_half(p+8+8*k,(uint16_t)(mx+dx+start+((k&1)?col-start:0)));
+                psx_mod_write_half(p+0xa+8*k,(uint16_t)(my+dy+row+((k&2)?1:0)));
+                psx_mod_write_byte(p+0xc+8*k,u+((k&1)?1:0));
+                psx_mod_write_byte(p+0xd+8*k,v+((k&2)?1:0));
+            }
         }
     }
     // D20D: '!' and '%' in the small font, one glyph quad per run.
@@ -1599,14 +1634,21 @@ struct Guest {
     // A string of the game's text table, by id, as the original passes it.
     void say_id(int id,int x,int y,uint32_t flags) {
         const uint32_t s=psx_mod_read_word(strings+4u*(uint32_t)id);
-        if(s>=0x80010000u && s<0x80200000u) call(fn_text,s,(uint32_t)x,(uint32_t)y,flags);
+        if(s>=0x80010000u && s<0x80200000u) {
+            std::string value;
+            for(unsigned i=0;i<100 && s+i<0x80200000u;++i) {const char c=(char)psx_mod_read_byte(s+i);if(!c)break;value+=c;}
+            say(value.c_str(),x,y,flags);
+        }
     }
     int width(const char* s,uint32_t font) {
+        const std::string localized=ptbr::glyphs(ptbr::translate(s));s=localized.c_str();
         const char* q=s;
         while(*q && !drawn_char(*q,font)) ++q;
         if(*q) {
             const std::string before(s,q);
-            return (before.empty() ? 0 : width(before.c_str(),font))+(*q=='"' ? quote_width(font) : drawn_width(*q))+(q[1] ? width(q+1,font) : 0);
+            const char base[2]={char(ptbr::base((unsigned char)*q)),0};
+            const int special=ptbr::accent((unsigned char)*q)?width(base,font):(*q=='"'?quote_width(font):drawn_width(*q));
+            return (before.empty() ? 0 : width(before.c_str(),font))+special+(q[1] ? width(q+1,font) : 0);
         }
         put(s);return (int)call(fn_width,text,font>>8,0,0);
     }
@@ -1629,7 +1671,13 @@ struct Guest {
         for(uint32_t p=before;p<after;p+=glyph_size) psx_mod_write_half(p+14,(uint16_t)(psx_mod_read_half(p+14)+clut_delta));
     }
     // D19J: the prompt helper itself, with a text id, as the title pages call it.
-    void prompt_id(Icon icon,int x,int y,int id) {call(fn_prompt,(uint32_t)icon,(uint32_t)x,(uint32_t)y,(uint32_t)id);}
+    void prompt_id(Icon icon,int x,int y,int id) {
+        const uint32_t s=psx_mod_read_word(strings+4u*(uint32_t)id);
+        if(s<0x80010000u || s>=0x80200000u)return;
+        std::string label;
+        for(unsigned i=0;i<100 && s+i<0x80200000u;++i) {const char c=(char)psx_mod_read_byte(s+i);if(!c)break;label+=c;}
+        prompt(icon,label.c_str(),x,y);
+    }
     // The prompt helper 0x8008411c with our own label: button left of the
     // centred small-font label.
     void prompt(Icon icon,const char* label,int x,int y) {
@@ -1638,6 +1686,23 @@ struct Guest {
         say(label,x,y,font_small|centre);
     }
 };
+// Translate original text calls too (title, pickups and briefings), without
+// altering the executable or any persistent guest strings. Nested host text
+// calls are guarded and the original draws only its terminating zero.
+void localized_text_entry(CPUState* cpu) {
+    if(localized_call || !input_modernized() || !ptbr::enabled())return;
+    const uint32_t addr=cpu->gpr[4];
+    if(addr<0x80010000u || addr>=0x80200000u)return;
+    std::string source;
+    for(unsigned i=0;i<100 && addr+i<0x80200000u;++i) {
+        const char c=(char)psx_mod_read_byte(addr+i);if(!c)break;source+=c;
+    }
+    if(source.empty() || source.size()>=100 || ptbr::translate(source)==source)return;
+    localized_call=true;
+    {Guest g(cpu);g.say(source.c_str(),(int)cpu->gpr[5],(int)cpu->gpr[6],cpu->gpr[7]);}
+    localized_call=false;
+    cpu->gpr[4]=addr+(uint32_t)source.size();
+}
 struct Geometry {int x0,y0,w,h;};
 Geometry read_geometry() {
     return {(int16_t)psx_mod_read_half(geometry),(int16_t)psx_mod_read_half(geometry+2),
@@ -1669,6 +1734,7 @@ void draw_options(Guest& g,const Geometry& geo) {
     prompts(g,geo,false);
 }
 void wrap(Guest& g,const char* text,int max,std::vector<std::string>& lines) {
+    const std::string localized=ptbr::translate(text);text=localized.c_str();
     std::string line,word;
     auto flush=[&]{
         const std::string t=line.empty()?word:line+" "+word;
@@ -1775,7 +1841,7 @@ void draw_settings(Guest& g,const Geometry& geo) {
 void say_key(Guest& g,const std::string& key,int x,int y,uint32_t flags) {
     if(key=="[") {g.say("L",x,y,flags);g.say("-",x+3,y-5,flags);return;}
     if(key=="]") {g.say("I",x+6,y,flags);g.say("-",x+4,y-5,flags);g.say("-",x,y+3,flags);return;}
-    g.say(key.c_str(),x,y,flags);
+    g.say_raw(key.c_str(),x,y,flags);
 }
 // D19G: KEY BINDINGS, laid out as the compact settings screens.
 void draw_keys(Guest& g,const Geometry& geo) {
@@ -1993,8 +2059,8 @@ void thumb_hide() {std::lock_guard<std::mutex> lock(thumb_mutex);overlay_on=fals
 bool steel_text() {return ttk_font_line_height(steel_set)>0;}
 // Letter spacing one pixel wider than the console's, for dates and times.
 int steel_width(const std::string& t) {
-    int w=0;
-    for(char c:t) {const char one[2]={c,0};w+=ttk_font_text_width(steel_set,one)+1;}
+    const auto text=ptbr::glyphs(ptbr::translate(t));
+    int w=ttk_font_text_width(steel_set,t.c_str())+int(text.size());
     return w>0 ? w*steel_scale : 0;
 }
 int canvas_x(const Geometry& geo,int x) {return (x-geo.x0)*canvas_w/geo.w;}
@@ -3133,7 +3199,7 @@ PSX_MOD_CONSTRUCTOR(register_ttk_game_menu) {
     // D19J: the frontend tick itself, before its pad read and state dispatch.
     psx_mod_register_function_entry_plugin("ttk.game.menu",0x80022324u,[](CPUState* cpu,uint32_t){ttk::title_entry(cpu);});
     // D19K: the startup memory card texts. D20B: the statistics screen's.
-    psx_mod_register_function_entry_plugin("ttk.game.menu",ttk::fn_text,[](CPUState* cpu,uint32_t){ttk::card_text_entry(cpu);ttk::stats_text_entry(cpu);});
+    psx_mod_register_function_entry_plugin("ttk.game.menu",ttk::fn_text,[](CPUState* cpu,uint32_t){ttk::card_text_entry(cpu);ttk::stats_text_entry(cpu);ttk::localized_text_entry(cpu);});
     // D20B: gameplay's exit (the level's last image) and the statistics screen's flip.
     psx_mod_register_function_entry_plugin("ttk.game.menu",ttk::gameplay_exit,[](CPUState*,uint32_t){ttk::gameplay_exit_entry();});
     psx_mod_register_function_entry_plugin("ttk.game.menu",ttk::flip,[](CPUState* cpu,uint32_t){ttk::stats_flip(cpu);});

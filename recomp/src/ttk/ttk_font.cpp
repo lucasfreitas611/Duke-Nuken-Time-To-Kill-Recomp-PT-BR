@@ -4,6 +4,7 @@
 // scale and the drop shadow come from the pack; this file only lays text out.
 #include "ttk_font.h"
 #include "pc_input.h"
+#include "localization.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -63,10 +64,11 @@ bool load() {
 // D19T: '"' opens and closes in turn: the pack's '`' is the opening quote.
 std::string ascii(const char* text) {
     std::string result;bool open=true;
-    for(const unsigned char* p=reinterpret_cast<const unsigned char*>(text);*p && result.size()<256;) {
+    const std::string localized=ttk::ptbr::glyphs(ttk::input_modernized()?ttk::ptbr::translate(text):text);
+    for(const unsigned char* p=reinterpret_cast<const unsigned char*>(localized.c_str());*p && result.size()<256;) {
         unsigned c=*p++;
         if(c=='"'){result.push_back(open?'`':'"');open=!open;}
-        else if(c>=32 && c<=126)result.push_back(char(c));
+        else if((c>=32 && c<=126) || ttk::ptbr::accent(c))result.push_back(char(c));
         else if(c=='\n')result.push_back('\n');
         else if(c=='\t')result.push_back(' ');
         else {
@@ -76,6 +78,19 @@ std::string ascii(const char* text) {
         }
     }
     return result;
+}
+const Glyph& letter(const Set& set,unsigned char c) {
+    unsigned b=ttk::ptbr::base(c);
+    return set.glyphs[(b>=32 && b<=126?b:'?')-32];
+}
+template<class Pixel> void mark(unsigned char c,int x,int y,const Glyph& glyph,int scale,
+                                uint32_t colour,Pixel pixel) {
+    const char* shape=ttk::ptbr::accent(c);
+    if(!shape)return;
+    const int mx=x+(int(glyph.advance)-5)/2,my=y+(c==0xc7?int(glyph.h)-1:-3);
+    for(int row=0;row<3;++row)for(int col=0;col<5;++col)if(shape[row*5+col]=='1')
+        for(int dy=0;dy<scale;++dy)for(int dx=0;dx<scale;++dx)
+            pixel((mx+col)*scale+dx,(my+row)*scale+dy,colour);
 }
 }
 extern "C" int ttk_font_rasterize(const char* text,int style,uint32_t* pixels,int cap_w,
@@ -88,7 +103,7 @@ extern "C" int ttk_font_rasterize(const char* text,int style,uint32_t* pixels,in
     const int padding=style==3?2:3;
     const int limit=std::min(cap_w,available_w)/scale-2*padding-1;
     if(limit<8)return 0;
-    auto g=[&](char c)->const Glyph& {return set.glyphs[(unsigned char)c-32];};
+    auto g=[&](char c)->const Glyph& {return letter(set,(unsigned char)c);};
     std::vector<std::string> lines;std::string line;int extent=0;
     for(char c:ascii(text)) {
         if(c=='\n'){lines.push_back(line);line.clear();extent=0;continue;}
@@ -117,13 +132,17 @@ extern "C" int ttk_font_rasterize(const char* text,int style,uint32_t* pixels,in
         int x=centered?(w/scale-1-line_width(lines[row]))/2:padding;
         for(char c:lines[row]) {
             const Glyph& v=g(c);
+            uint32_t ink=0;
             for(unsigned iy=0;iy<v.h;++iy)for(unsigned ix=0;ix<v.w;++ix) {
                 const uint32_t colour=u32(pack.data()+16+v.offset+4*(iy*v.w+ix));
                 if(!(colour>>24))continue;
+                ink=std::max(ink,colour);
                 for(int dy=0;dy<scale;++dy)for(int dx=0;dx<scale;++dx)
                     pixel((x+int(ix)+shadow)*scale+dx,(padding+int(row)*int(set.line_height)+int(v.y+iy)+shadow)*scale+dy,
                           shadow?set.shadow_colour:colour);
             }
+            mark((unsigned char)c,x+shadow,padding+int(row)*int(set.line_height)+int(v.y)+shadow,v,scale,
+                 shadow?set.shadow_colour:ink,pixel);
             x+=int(v.advance);
         }
     }
@@ -141,19 +160,23 @@ extern "C" int ttk_font_draw_spaced(int set,const char* text,uint32_t* dst,int d
     const int scale=int(font.scale);
     const std::string line=ascii(text);
     int width=0;
-    for(char c:line){if(c=='\n')break;width+=int(font.glyphs[(unsigned char)c-32].advance)+spacing;}
+    for(char c:line){if(c=='\n')break;width+=int(letter(font,(unsigned char)c).advance)+spacing;}
     auto pixel=[&](int px,int py,uint32_t colour){if(px>=0 && py>=0 && px<dst_w && py<dst_h)dst[py*dst_w+px]=colour;};
     for(int shadow=font.shadow?1:0;shadow>=0;--shadow) {
         int cx=0;
         for(char c:line) {
             if(c=='\n')break;
-            const Glyph& v=font.glyphs[(unsigned char)c-32];
+            const Glyph& v=letter(font,(unsigned char)c);
+            uint32_t ink=0;
             for(unsigned iy=0;iy<v.h;++iy)for(unsigned ix=0;ix<v.w;++ix) {
                 const uint32_t colour=u32(pack.data()+16+v.offset+4*(iy*v.w+ix));
                 if(!(colour>>24))continue;
+                ink=std::max(ink,colour);
                 for(int dy=0;dy<scale;++dy)for(int dx=0;dx<scale;++dx)
                     pixel(x+(cx+int(ix)+shadow)*scale+dx,y+(int(v.y+iy)+shadow)*scale+dy,shadow?font.shadow_colour:colour);
             }
+            mark((unsigned char)c,cx+shadow,int(v.y)+shadow,v,scale,shadow?font.shadow_colour:ink,
+                 [&](int px,int py,uint32_t colour){pixel(x+px,y+py,colour);});
             cx+=int(v.advance)+spacing;
         }
     }
@@ -162,7 +185,7 @@ extern "C" int ttk_font_draw_spaced(int set,const char* text,uint32_t* dst,int d
 extern "C" int ttk_font_text_width(int set,const char* text) {
     if(!text || !load() || set<0 || unsigned(set)>=set_count)return -1;
     int width=0;
-    for(char c:ascii(text)){if(c=='\n')break;width+=int(sets[set].glyphs[(unsigned char)c-32].advance);}
+    for(char c:ascii(text)){if(c=='\n')break;width+=int(letter(sets[set],(unsigned char)c).advance);}
     return width*int(sets[set].scale);
 }
 extern "C" int ttk_font_line_height(int set) {

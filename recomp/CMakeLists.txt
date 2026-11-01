@@ -270,6 +270,12 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ttk-mission-items.pack"
 add_custom_target(ttk-mission-item-assets DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/ttk-mission-items.pack")
 add_dependencies(psx-runtime ttk-mission-item-assets)
 if(TARGET SDL3::SDL3)
+    add_executable(ttk-pt-br-test EXCLUDE_FROM_ALL tests/local/pt_br_native.cpp src/ttk/ttk_font.cpp)
+    target_include_directories(ttk-pt-br-test PRIVATE src/ttk ${PSXRECOMP_ROOT}/runtime/include)
+    target_compile_definitions(ttk-pt-br-test PRIVATE PSX_SDL3=1)
+    target_compile_options(ttk-pt-br-test PRIVATE -UNDEBUG)
+    target_compile_features(ttk-pt-br-test PRIVATE cxx_std_17)
+    target_link_libraries(ttk-pt-br-test PRIVATE SDL3::SDL3)
     add_executable(ttk-font-test EXCLUDE_FROM_ALL tests/local/ttk_font_native.cpp src/ttk/ttk_font.cpp)
     target_include_directories(ttk-font-test PRIVATE src/ttk ${PSXRECOMP_ROOT}/runtime/include)
     target_compile_definitions(ttk-font-test PRIVATE PSX_SDL3=1)
@@ -331,6 +337,13 @@ target_compile_features(ttk-music-test PRIVATE cxx_std_17)
 target_compile_options(ttk-music-test PRIVATE -UNDEBUG)
 target_compile_definitions(ttk-music-test PRIVATE PSX_SDL3=1)
 target_link_libraries(ttk-music-test PRIVATE SDL3::SDL3)
+endif()
+
+# Clang's optimizer takes exceptionally long on this single large generated
+# function. Keep the Windows build practical without editing generated code.
+if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/generated/SLUS_005.83_full_65.c"
+        PROPERTIES COMPILE_OPTIONS "-O0")
 endif()
 
 add_executable(ttk-xa-test EXCLUDE_FROM_ALL tests/local/concurrent_xa_native.c)

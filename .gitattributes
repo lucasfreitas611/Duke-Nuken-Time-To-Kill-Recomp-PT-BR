@@ -1,0 +1,2 @@
+# Framework patches must keep LF when cloned on Windows.
+*.patch text eol=lf
