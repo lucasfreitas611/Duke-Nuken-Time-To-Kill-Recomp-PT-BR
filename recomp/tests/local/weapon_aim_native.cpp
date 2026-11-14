@@ -1,5 +1,6 @@
 // Collision fixture checks for the actual adapter; not retail geometry proof.
 #include "weapon_aim.h"
+#include "windows_test_env.h"
 #include "modern_controls.h"
 #include "pc_input.h"
 #include "cpu_state.h"

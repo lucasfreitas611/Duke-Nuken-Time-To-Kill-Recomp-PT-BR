@@ -67,6 +67,12 @@ def main(argv=None):
     p.add_argument('--steroids', choices=profiles.STEROIDS_MODES, help='save Modernized steroids: portable (default; a pickup is stored as one dose that R takes, EDuke32 style) or original (the effect starts on pickup); Vanilla always uses original')
     p.add_argument('--view-bob', choices=profiles.VIEW_BOBS, help='save Modernized first-person view bob while walking: off, subtle, on (default) or strong; standing still is steady at every setting')
     p.add_argument('--geometry-precision', choices=profiles.PRECISION_MODES, help='save Modernized mesh geometry: original (default) or corrected subpixel positions; OpenGL, next launch')
+    p.add_argument('--vsync', choices=('on','off'), help='save vertical synchronization; on avoids tearing, off allows unsynchronized swaps; next launch')
+    p.add_argument('--campaign-art-preview', action='store_true', help='load locally authored campaign art preview')
+    p.add_argument('--hud-hd', action='store_true', help='load the local HD status bar textures in Modernized OpenGL')
+    p.add_argument('--menu-hd', action='store_true', help='load the locally prepared HD menu font in Modernized OpenGL')
+    p.add_argument('--antialias', choices=('off','smooth'), help='save lightweight spatial edge smoothing and filtered replacement textures; OpenGL, next launch')
+    p.add_argument('--texture-set', choices=('original','realistic'), help='save Original or complete generated first-level Realistic texture art; next launch')
     p.add_argument('--texture-precision', choices=profiles.PRECISION_MODES, help='save Modernized mesh textures: original (default) or corrected perspective; OpenGL, next launch')
     p.add_argument('--world-renderer', choices=profiles.WORLD_RENDERERS, help='save Modernized renderer: polymorph (default; one geometry path, host world visibility, redraw-only frames at high refresh) or classic (the game\'s own drawing order and visibility); Vanilla always uses classic')
     p.add_argument('--draw-distance', choices=profiles.DRAW_DISTANCES, help='save Modernized draw distance: extended (default; maximum view limit, open sky over outdoor walls, distant enemies dormant until near or hurt, no distant black seams) or original; Vanilla always uses original')
@@ -108,7 +114,7 @@ def main(argv=None):
             profile = settings['profiles']['modernized']
             profile['bindings'] = pc_input.rebind(profile['bindings'], a.bind)
             changed = True
-        if a.auto_bio_mask is not None or a.night_vision is not None or a.wall_view is not None or a.overhead_view is not None or a.mantle_view is not None or a.pole_view is not None or a.ladder_view is not None or a.push_view is not None or a.jetpack_view is not None or a.swim_view is not None or a.steroids is not None or a.draw_distance is not None or a.world_renderer is not None or a.geometry_precision is not None or a.texture_precision is not None or a.view_bob is not None or a.frame_rate is not None or a.jump is not None or a.jump_walls is not None or a.landing is not None or a.wall_backflip is not None or a.crouch is not None or a.dynamite is not None or a.swimming is not None or a.cpu_overclock is not None or a.cpu_timing is not None or a.widescreen is not None or a.camera_distance is not None or a.shoulder is not None or a.view is not None or a.jetpack is not None or a.aim_assist is not None or a.red_dot is not None or a.crosshair is not None or a.weapon_aim is not None or a.camera is not None or a.mouse_sensitivity is not None or a.invert_y is not None:
+        if a.vsync is not None or a.antialias is not None or a.texture_set is not None or a.auto_bio_mask is not None or a.night_vision is not None or a.wall_view is not None or a.overhead_view is not None or a.mantle_view is not None or a.pole_view is not None or a.ladder_view is not None or a.push_view is not None or a.jetpack_view is not None or a.swim_view is not None or a.steroids is not None or a.draw_distance is not None or a.world_renderer is not None or a.geometry_precision is not None or a.texture_precision is not None or a.view_bob is not None or a.frame_rate is not None or a.jump is not None or a.jump_walls is not None or a.landing is not None or a.wall_backflip is not None or a.crouch is not None or a.dynamite is not None or a.swimming is not None or a.cpu_overclock is not None or a.cpu_timing is not None or a.widescreen is not None or a.camera_distance is not None or a.shoulder is not None or a.view is not None or a.jetpack is not None or a.aim_assist is not None or a.red_dot is not None or a.crosshair is not None or a.weapon_aim is not None or a.camera is not None or a.mouse_sensitivity is not None or a.invert_y is not None:
             controls = dict(settings['profiles']['modernized']['controls'])
             if a.aim_assist is not None: controls['aim_assist'] = a.aim_assist
             if a.jetpack is not None: controls['jetpack'] = a.jetpack
@@ -137,6 +143,9 @@ def main(argv=None):
             if a.geometry_precision is not None: controls['geometry_precision'] = a.geometry_precision
             if a.draw_distance is not None: controls['draw_distance'] = a.draw_distance
             if a.world_renderer is not None: controls['world_renderer'] = a.world_renderer
+            if a.vsync is not None: controls['vsync'] = a.vsync
+            if a.antialias is not None: controls['antialias'] = a.antialias
+            if a.texture_set is not None: controls['texture_set'] = a.texture_set
             if a.texture_precision is not None: controls['texture_precision'] = a.texture_precision
             if a.view_bob is not None: controls['view_bob'] = a.view_bob
             if a.shoulder is not None: controls['shoulder'] = a.shoulder
@@ -233,6 +242,46 @@ def main(argv=None):
     precision_supported = modernized and settings['profiles'][settings['active']]['presentation']['renderer'] == 'opengl'
     env['DNTTK_GEOMETRY_PRECISION'] = controls['geometry_precision'] if precision_supported else 'original'
     env['DNTTK_TEXTURE_PRECISION'] = controls['texture_precision'] if precision_supported else 'original'
+    env['DNTTK_VSYNC'] = controls['vsync']
+    env['PSX_VSYNC'] = '1' if controls['vsync'] == 'on' else '0'
+    env['PSX_REPLAY_VSYNC'] = env['PSX_VSYNC']
+    env['DNTTK_ANTIALIAS'] = controls['antialias'] if precision_supported else 'off'
+    env['DNTTK_TEXTURE_SET'] = controls['texture_set'] if precision_supported else 'original'
+    env.pop('DNTTK_TEXTURE_PACK', None)
+    env.pop('DNTTK_CAMPAIGN_ART', None)
+    env.pop('DNTTK_HUD_TEXTURE_PACK', None)
+    if precision_supported and a.hud_hd:
+        hud = ROOT / 'analysis/campaign-art/ui/hud/pack.ttkpack'
+        if hud.is_file():
+            env['DNTTK_HUD_TEXTURE_PACK'] = str(hud)
+        else:
+            print('HD HUD pack missing; original HUD retained.', file=sys.stderr)
+    if precision_supported and (a.menu_hd or a.hud_hd or a.campaign_art_preview or controls['texture_set']=='realistic'):
+        menu = ROOT / 'analysis/campaign-art/ui/menu-font'
+        pack = menu / ('with-hud.ttkpack' if a.hud_hd else 'menu.ttkpack')
+        if pack.is_file():
+            env['DNTTK_HUD_TEXTURE_PACK'] = str(pack)
+        elif a.menu_hd and not a.hud_hd:
+            print('HD menu font pack missing; original menu font retained.', file=sys.stderr)
+    if precision_supported and controls['texture_set'] == 'realistic':
+        pack = ROOT / 'analysis/level00-realistic-complete/pack.ttkpack'
+        if pack.is_file():
+            env['DNTTK_TEXTURE_PACK'] = str(pack.resolve())
+        else:
+            print('Realistic texture pack missing; original artwork retained.', file=sys.stderr)
+        if a.campaign_art_preview:
+            campaign = ROOT / 'analysis/campaign-art'
+            env['DNTTK_CAMPAIGN_ART'] = str(campaign / 'packs')
+            icons = campaign / 'ui/ttk-inv-icons.pack'
+            if icons.is_file():
+                env['DNTTK_INV_ICONS'] = str(icons)
+            mission = campaign / 'ui/ttk-mission-items.pack'
+            if mission.is_file():
+                env['DNTTK_MISSION_ITEMS'] = str(mission)
+            font = campaign / 'ui/ttk-fonts.pack'
+            if font.is_file():
+                env['DNTTK_FONT_PACK'] = str(font)
+
     if modernized and not precision_supported and any(controls[k] == 'corrected' for k in ('geometry_precision','texture_precision')):
         print('Mesh precision requires OpenGL; this software-renderer session uses Original.', file=sys.stderr)
     # D17P: render-only view limits; Vanilla keeps the original.

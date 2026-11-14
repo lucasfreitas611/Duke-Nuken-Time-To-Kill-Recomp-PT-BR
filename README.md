@@ -4,7 +4,16 @@ Recompilação nativa de Duke Nukem: Time to Kill para PC, com interface em port
 
 Este projeto deriva de [MusicMonsterMod/duke-nukem-time-to-kill-recomp](https://github.com/MusicMonsterMod/duke-nukem-time-to-kill-recomp). O histórico, a implementação e a documentação desse projeto foram preservados. A base desta versão é o commit `95a5471`. Esta não é uma tradução oficial dos detentores dos direitos do jogo.
 
-**É necessário possuir uma cópia original USA, SLUS-00583.** Não são distribuídos disco, BIOS comercial, código gerado do jogo, executável compilado, fontes extraídas, saves ou cartões de memória. A edição europeia/PAL não é compatível com este build.
+**É necessário possuir uma cópia original USA, SLUS-00583.** Não são distribuídos disco, BIOS comercial, código gerado do jogo, executável do jogo já recompilado, fontes extraídas, saves ou cartões de memória. A edição europeia/PAL não é compatível com este build.
+
+## Instalação assistida no Windows
+
+Baixe o Setup para Windows 10/11 x64. O assistente verifica os requisitos e
+prepara o jogo quando você seleciona a imagem da sua cópia original USA.
+O pacote completo inclui as ferramentas e bibliotecas para a preparação offline.
+
+- [Instalador nos Releases](https://github.com/lucasfreitas611/Duke-Nuken-Time-To-Kill-Recomp-PT-BR/releases)
+- [Tutorial de instalação, atualização e requisitos](documentation/instalacao-windows-ptbr.md)
 
 ## O que foi acrescentado
 
@@ -15,6 +24,10 @@ Este projeto deriva de [MusicMonsterMod/duke-nukem-time-to-kill-recomp](https://
 - Correção da declaração `dllexport` ao compilar os módulos de vídeo/geometria com Clang no Windows. A correção integra o patch de framework aplicado pelo build.
 - Otimização desativada apenas no arquivo gerado `SLUS_005.83_full_65.c`, no Windows com Clang, para evitar a demora excessiva de compilação dessa função. Os demais arquivos mantêm a otimização original. Essa exceção pode afetar o desempenho das rotinas desse bloco.
 - Arquivos `.cmd` para abrir os modos em português, inglês e Vanilla, e testes nativos da localização.
+- Correções de precisão de vértices e texturas e ajustes de profundidade no modo Modernizado com OpenGL.
+- VSync, opções de apresentação e ferramentas locais para testar a HUD HD e as texturas da campanha.
+- Atlas HD mais compacto, recuperação de cadência e redução de quadros repetidos durante movimentação e combate.
+- Instalador offline com verificação de requisitos, importação do disco USA e tipografia remasterizada dos menus.
 
 As falas e os vídeos continuam no idioma original. Textos incorporados em imagens, nomes próprios e interfaces de diagnóstico podem permanecer em inglês. O catálogo cobre os objetivos da campanha, mas a campanha completa ainda não foi revisada visualmente em português.
 

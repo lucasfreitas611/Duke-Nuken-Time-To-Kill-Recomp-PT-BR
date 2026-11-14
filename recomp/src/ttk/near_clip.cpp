@@ -991,6 +991,8 @@ void scene_depth_begin(const Frame& f,bool prop=false,bool phone=false) {
 }
 bool begin(Frame& f,CPUState* cpu,bool object) {
     f.g=read_gte(cpu);f.object=object;f.stats=object?&object_stats:&world_stats;
+    f.mesh=cpu->gpr[4];f.caller=cpu->gpr[31];
+    f.instance=object && f.caller==0x80032288 ? cpu->gpr[18] : 0;
     f.far_limit=psx_mod_read_word(context+0x78);f.zsf3=(uint32_t)(int32_t)(int16_t)cpu->gte_ctrl[29];last_zsf3=(int32_t)f.zsf3;
     f.zsf4=(uint32_t)(int32_t)(int16_t)cpu->gte_ctrl[30];
     return f.g.h>=64;
@@ -1036,6 +1038,22 @@ uint64_t unified_downgrades,fallback_kind[3],near_fallbacks;
 uint32_t mesh_need(const Frame& f,size_t faces) {
     if(host_piece && f.far && unified_scene(f)) return 512+(uint32_t)faces*0x34*3/2;
     return takeover_reserve+(uint32_t)faces*(unified_scene(f)?0x34:0x28*3);
+}
+// Bounded host-only diagnostics: retain rare admission failures even when the
+// verbose primitive trace is disabled. No guest memory or packet decisions change.
+struct BudgetEvent {
+    const char* reason;uint64_t frame;
+    uint32_t mesh,caller,instance,faces,available,required,used,limit;
+    bool object,far,unified;
+};
+constexpr unsigned budget_event_capacity=16;
+BudgetEvent budget_events[budget_event_capacity]{};
+uint64_t budget_event_count=0;
+void record_budget_event(const Frame& f,const char* reason,size_t faces) {
+    auto& e=budget_events[budget_event_count++%budget_event_capacity];
+    e={reason,input_host_frame(),f.mesh,f.caller,f.instance,(uint32_t)faces,
+       budget(f),mesh_need(f,faces),frame_host_bytes,cursor_limit(f),
+       f.object,f.far,unified_scene(f)};
 }
 // D17AR2 host visibility: a piece drawn from the host world pass
 // (near_clip_host_world_piece) is either drawn here whole or left untouched,
@@ -1114,6 +1132,7 @@ void world(CPUState* cpu) {
         if(!group.kept.empty()) groups.push_back(std::move(group));
     }
     if(forced && budget(f)<mesh_need(f,taken.size())) {
+        record_budget_event(f,host_piece?"host_piece_left":"unified_downgrade",taken.size());
         if(host_piece) {++(f.far?host_left_far:host_left_near);trace_record(f,"host_piece_left",0);return;}
         forced=false;f.scene=false;++unified_downgrades;trace_record(f,"unified_downgrade",0);
         scene_depth_begin(f);
@@ -1123,7 +1142,7 @@ void world(CPUState* cpu) {
     break;
     }
     if(taken.empty()) return;
-    if(budget(f)<mesh_need(f,taken.size())) {++mesh_fallbacks;++fallback_kind[0];near_fallbacks+=!f.far;trace_record(f,"mesh_budget_fallback",0);return;}
+    if(budget(f)<mesh_need(f,taken.size())) {record_budget_event(f,"mesh_fallback",taken.size());++mesh_fallbacks;++fallback_kind[0];near_fallbacks+=!f.far;trace_record(f,"mesh_budget_fallback",0);return;}
     const uint32_t copy=guest_copy();
     const unsigned read_verts=(count+2)/3*3;
     const uint32_t head_size=0x1c+8*read_verts,list_offset=(head_size+15)&~15u;
@@ -1560,6 +1579,7 @@ void object(CPUState* cpu) {
         if(!group.kept.empty()) groups.push_back(std::move(group));
     }
     if(forced && budget(f)<mesh_need(f,taken.size())) {
+        record_budget_event(f,"unified_downgrade",taken.size());
         if(!f.sky && !viewmodel) frame_after_missed+=(uint32_t)taken.size()*0x34;
         forced=false;f.scene=false;++unified_downgrades;trace_record(f,"unified_downgrade",0);
         if(!body) scene_depth_begin(f,!actor,phone);
@@ -1570,6 +1590,7 @@ void object(CPUState* cpu) {
     }
     if(taken.empty()) return;
     if(budget(f)<mesh_need(f,taken.size())) {
+        record_budget_event(f,"mesh_fallback",taken.size());
         if(!f.sky && !viewmodel) frame_after_missed+=(uint32_t)taken.size()*0x34;
         ++mesh_fallbacks;++fallback_kind[f.sky?2:1];near_fallbacks+=!f.far;trace_record(f,"mesh_budget_fallback",0);return;}
     const uint32_t copy=guest_copy();
@@ -1705,6 +1726,19 @@ void near_hook_body(CPUState* cpu,uint32_t address) {
     // else runs, so no frame boundary (where redraw workers copy the
     // machine) ever sees them; near_clip_flip() is the backstop.
     if(address!=0x8002d848u && address!=0x8002bd48u && address!=0x800a2690u) model_end();
+    if(address==0x80025554u) {
+        // Loading draws its backdrop and logo without scene composition.
+        // The nonempty backdrop OT cannot trigger the empty-OT fallback below,
+        // so otherwise each logo appends to the previous loading image forever.
+        // Reuse the same flip-gated rotation as scenes: a second entry before
+        // submission must never overwrite packets already queued in this frame.
+        const uint32_t ra=cpu->gpr[31];
+        if(input_modernized() && (ra==0x8001c49cu || ra==0x8002343cu || ra==0x80025818u) && identity()) {
+            frame_first_cursor=psx_mod_read_word(context);
+            host_frame_reset();
+        }
+        return;
+    }
     // The drawing chain closes after the last mesh: give it its depth.
     if(address==0x8001fba0u) {scene_depth_flush();return;}
     if(address==0x8002bc18u) {water_clip(cpu);return;}
@@ -1831,6 +1865,11 @@ void near_clip_prepare() {
 }
 void near_clip_flip() {region_chosen=false;model_end();}
 NearClipFrameState near_clip_frame_state() {return {frame_first_cursor,frame_host_bytes,held_frame,host_region,region_chosen};}
+NearClipWorkerState near_clip_worker_state() {return {host_arena_base,region_mirror,mask_arena,copy_base,empty_rect,missing_texture_copy,last_after_walk_bytes};}
+void near_clip_load_worker_state(const NearClipWorkerState& s) {
+    host_arena_base=s.arena;region_mirror=s.mirror;mask_arena=s.mask;
+    copy_base=s.copy;empty_rect=s.rect;missing_texture_copy=s.missing;last_after_walk_bytes=s.after_walk;
+}
 void near_clip_load_frame_state(const NearClipFrameState& s) {
     frame_first_cursor=s.first_cursor;frame_host_bytes=s.host_bytes;held_frame=s.held_frame;host_region=s.host_region%host_regions;
     region_chosen=s.region_chosen;held_packets.clear();
@@ -2008,6 +2047,10 @@ NearProjected near_project(const NearGte& g,int16_t vx,int16_t vy,int16_t vz) {
     out.safe=safe;
     return out;
 }
+bool near_exact_decal_screen() {
+    static const int override_policy=env_int("DNTTK_DECAL_EXACT",-1,0,1);
+    return override_policy>=0 ? override_policy!=0 : pgxp_mesh_geometry()!=0;
+}
 uint32_t near_dpcs(const NearGte& g,uint32_t rgbc,int16_t ir0) {
     uint32_t out=rgbc&0xff000000u;
     for(int i=0;i<3;++i) {
@@ -2019,7 +2062,7 @@ uint32_t near_dpcs(const NearGte& g,uint32_t rgbc,int16_t ir0) {
     return out;
 }
 const char* near_clip_debug_json() {
-    static char buffer[3328];
+    static char buffer[12288];
     auto part=[](const Stats& s,char* out,size_t n){
         std::snprintf(out,n,"{\"seen\":%llu,\"taken\":%llu,\"polys\":%llu,\"culled\":%llu,\"triangles\":%llu,\"budget_hits\":%llu}",
             (unsigned long long)s.seen,(unsigned long long)s.taken,(unsigned long long)s.polys,(unsigned long long)s.culled,
@@ -2039,14 +2082,38 @@ const char* near_clip_debug_json() {
         (unsigned long long)coplanar_hits,(unsigned long long)coplanar_builds,(unsigned long long)coplanar_checked,(unsigned long long)coplanar_mismatch,
         (unsigned long long)model_seen,(unsigned long long)model_taken,(unsigned long long)model_mismatch,(unsigned long long)model_near_cleared,(unsigned long long)model_faces,
         (unsigned long long)model_faces_taken,(unsigned long long)model_faces_native,(unsigned long long)model_faces_dropped,(unsigned long long)model_faces_budget,(unsigned long long)model_flat,(unsigned long long)model_faces_decal,(unsigned long long)object_room_lifts,(unsigned long long)model_sides_cleared,(unsigned long long)model_flags_lifted,(unsigned long long)model_backface,(unsigned long long)model_refined,(unsigned long long)model_refine_skipped,model_refine_max,model_refine_last[0],model_refine_last[1],model_refine_last[2],model_refine_last[3],model_refine_last[4],model_refine_last[5]);
+    // Append chronologically; fixed capacity bounds memory and debug response size.
+    size_t used=std::strlen(buffer);
+    if(used && buffer[used-1]=='}') --used;
+    used+=std::snprintf(buffer+used,sizeof buffer-used,",\"water_live_skipped\":%llu,\"budget_event_count\":%llu,\"budget_events\":[",
+        (unsigned long long)water_live_skipped,(unsigned long long)budget_event_count);
+    const uint64_t first=budget_event_count>budget_event_capacity?budget_event_count-budget_event_capacity:0;
+    for(uint64_t i=first;i<budget_event_count;++i) {
+        const auto& e=budget_events[i%budget_event_capacity];
+        used+=std::snprintf(buffer+used,sizeof buffer-used,
+            "%s{\"reason\":\"%s\",\"frame\":%llu,\"mesh\":%u,\"caller\":%u,\"instance\":%u,\"faces\":%u,\"available\":%u,\"required\":%u,\"used\":%u,\"limit\":%u,\"object\":%s,\"far\":%s,\"unified\":%s}",
+            i==first?"":",",e.reason,(unsigned long long)e.frame,e.mesh,e.caller,e.instance,e.faces,e.available,e.required,e.used,e.limit,
+            e.object?"true":"false",e.far?"true":"false",e.unified?"true":"false");
+    }
+    std::snprintf(buffer+used,sizeof buffer-used,"]}");
     return buffer;
 }
 }
 PSX_MOD_CONSTRUCTOR(register_ttk_near_clip) {
     (void)ttk::host_arena();
     ttk::mask_arena=psx_mod_alloc_gpu_dma_memory(ttk::mask_frame_bytes*ttk::mask_blocks,16);
-    for(uint32_t address:{0x8001fba0u,0x8002bc18u,0x800b4d2cu,0x80010000u,0x80011020u,0x8002ee50u,0x80026164u,0x800114ecu,0x8001160cu,0x8002d848u,0x8002bd48u,0x800a2690u})
+    for(uint32_t address:{0x8001fba0u,0x8002bc18u,0x800b4d2cu,0x80010000u,0x80011020u,0x8002ee50u,0x80026164u,0x800114ecu,0x8001160cu,0x8002d848u,0x8002bd48u,0x800a2690u,0x80025554u})
         psx_mod_register_function_entry_plugin("ttk.near.clip",address,ttk::hook);
 }
 
 extern "C" const uint16_t* ttk_biomask_texture(void) {return bio_mask_atlas;}
+// A bank is eligible only in settled gameplay. GL checks the actual VRAM
+// source and palette before using a replacement at any reused locator.
+extern "C" int ttk_texture_pack_level(void) {
+    if(psx_mod_read_half(0x800bcbb0)!=1 || psx_mod_read_half(0x800ce1b0)!=2)return -1;
+    const auto level=psx_mod_read_word(0x800be570);
+    return level<32 ? int(level) : -1;
+}
+extern "C" int ttk_antialias_active(void) {
+    return psx_mod_read_half(0x800bcbb0)==1 && psx_mod_read_half(0x800ce1b0)==2;
+}

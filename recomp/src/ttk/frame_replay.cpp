@@ -28,6 +28,7 @@
 #include "weapon_aim.h"
 #include "near_clip.h"
 #include "sky_render.h"
+#include "render_replay.h"
 #include "psx_sdl.h"
 #include <algorithm>
 #include <atomic>
@@ -42,6 +43,7 @@
 extern "C" {
 extern int g_psx_call_bail;
 int overlay_loader_prepare_address(uint32_t addr);
+void pgxp_mesh_configure(int geometry,int textures);
 }
 
 extern "C" uint64_t s_frame_count;
@@ -382,6 +384,8 @@ struct Params {
     uint32_t render_len;     // draw-time host state after the patches
     uint32_t nxf;            // transform substitutions after the render state
     NearClipFrameState near; // D17A: the live frame's near clip accounting
+    NearClipWorkerState resources;
+    uint32_t aim_bindings[3];
     int32_t logo;            // D17U: logo angle to show (flag 4)
 };
 struct MatPatch {uint32_t addr; Mat mat;};
@@ -396,6 +400,8 @@ constexpr int scratch_n=64;
 uint32_t build_params(const InterpState& a,const InterpState& b,double alpha,uint8_t* out) {
     Params p{};
     p.magic=0x54544b32u;
+    p.resources=near_clip_worker_state();
+    aim_render_bindings(p.aim_bindings);
     p.alpha=(float)alpha;
     // Camera: a jump in the anchor (cut, teleport) keeps the base camera.
     CameraState c=a.camera;
@@ -618,6 +624,7 @@ int pace_div=1, pace_clean=0, pace_backoff=1; uint64_t pace_presents=0, pace_bad
 double pace_last_ratio=0; uint64_t pace_mid=0;
 // D23H load shedding (replay_load_window): divisor steps it owns, its backoff.
 int shed_steps=0, shed_backoff=1, shed_bad=0, shed_clean=0, shed_since_probe=1000, shed_full_clean=0;
+int shed_headroom_clean=0;
 double shed_feed_ms=0;  // D17AR3 part 4: redraw feed cost in the second that shed
 uint64_t shed_probes=0, shed_failed_probes=0;  // D23H: windows between 2% and 10%
 // D23H: every present-rate change goes to the session log with its reason,
@@ -713,7 +720,7 @@ int submit_job(Frame& base,const Frame& next,double alpha,bool late,double look_
         // highlight one image sooner); the angle is the same interpolation.
         const Frame& drawn=next.loading && base.menu_mode && next.menu_mode && loading_newest() ? next : base;
         Params p{};
-        p.magic=0x54544b32u; p.alpha=(float)a; p.flags=4; p.near=drawn.near;
+        p.magic=0x54544b32u; p.alpha=(float)a; p.flags=4; p.near=drawn.near;p.resources=near_clip_worker_state();aim_render_bindings(p.aim_bindings);
         p.logo=((int)base.logo+(int)std::lround(turn*a))&0xfff;
         std::memcpy(param_buffer,&p,sizeof p);
         const uint32_t len=append_render(drawn,param_buffer,sizeof p);
@@ -1054,6 +1061,8 @@ int worker_draw(CPUState* source,const void* params,uint32_t len) {
     Params p;
     std::memcpy(&p,params,sizeof p);
     if(p.magic!=0x54544b32u || sizeof(Params)+(uint64_t)p.nmats*sizeof(MatPatch)>len) return 0;
+    near_clip_load_worker_state(p.resources);
+    aim_render_load_bindings(p.aim_bindings);
     // Developer mask DNTTK_INTERP_CAM: 1 rotation, 2 anchor/distance/room,
     // 4 view matrix +0x20/+0x34, 8 eye position +0x14 (default all).
     static const unsigned cam_mask=[]{const char* t=std::getenv("DNTTK_INTERP_CAM");return t?(unsigned)std::strtoul(t,nullptr,0):15u;}();
@@ -1393,7 +1402,16 @@ int timeline_provider(const PSXModPresentInfo* info) {
     }
     static double adjust_ms=0;
     if(!late_lead_fixed) {
-        const double wanted=std::clamp(late_ready_ms+3.0,6.0,40.0);
+        // Worker readiness measures the packet builder, before the GL thread
+        // feeds those packets. Leave room for that feed and its polling jitter
+        // so a packet that is ready near the deadline can still make the swap.
+        static const bool compensate_feed=[] {
+            const char* value=std::getenv("DNTTK_REPLAY_FEED_MARGIN");
+            return !(value && !std::strcmp(value,"0"));
+        }();
+        const double feed_margin=compensate_feed && replay_gameplay_context()
+            ? std::clamp(feed_ms*2.0,2.0,6.0) : 0.0;
+        const double wanted=std::clamp(late_ready_ms+3.0+feed_margin,6.0,40.0);
         const double step=adjust_ms?std::clamp((now_ms-adjust_ms)*.1,0.0,1.0):0;
         late_lead_ms+=std::clamp(wanted-late_lead_ms,-step,step);
     }
@@ -1532,6 +1550,14 @@ int provider(const PSXModPresentInfo* info,void*) {
 
 bool modernized_session=false;   // D19G1: FRAME RATE can start replay later
 bool slack_fixed=false;
+void worker_prepare() {
+    // Windows helpers enter before SDL/device initialization. Their input
+    // configuration is needed by draw policies, but they never own a window.
+    input_init(nullptr);
+    const char* geometry=std::getenv("DNTTK_GEOMETRY_PRECISION");
+    const char* textures=std::getenv("DNTTK_TEXTURE_PRECISION");
+    pgxp_mesh_configure(geometry && !std::strcmp(geometry,"corrected"),textures && !std::strcmp(textures,"corrected"));
+}
 // The present rate's own settings, at a launch and on a FRAME RATE change.
 void apply_rate(int32_t hz) {
     target_hz=hz;
@@ -1544,10 +1570,13 @@ void apply_rate(int32_t hz) {
     // Unlimited retains the guard so overload feeds its adaptive cadence.
     if(!slack_fixed) slack_floor_ms=continuous_timeline() && hz!=-1 ? 0.0 : 0.5;
     pace_div=1;pace_clean=0;pace_backoff=1;
+    shed_steps=0;shed_bad=0;shed_clean=0;shed_headroom_clean=0;
+    shed_backoff=1;shed_since_probe=1000;shed_full_clean=0;
     psx_mod_set_present_divisor(1);
 }
 
 void activate() {
+    render_worker_register_bootstrap(worker_draw,worker_prepare);
     const char* mode=std::getenv("DNTTK_INPUT_MODE");
     if(!mode || std::strcmp(mode,"modernized")) return;
     modernized_session=true;
@@ -1748,14 +1777,14 @@ bool frame_rate_set(const char* value) {
 int replay_load_window(int window) {
     static const bool shed=[]{const char* t=std::getenv("DNTTK_REPLAY_SHED");return !(t && t[0]=='0' && !t[1]);}();
     if(!shed) window=window==1 ? 2 : window;
-    if(!replay_on || !interp_replay || !late_camera()) {shed_bad=shed_clean=0;return window==1 ? -1 : 0;}
+    if(!replay_on || !interp_replay || !late_camera()) {shed_bad=shed_clean=shed_headroom_clean=0;return window==1 ? -1 : 0;}
     shed_steps=std::min(shed_steps,pace_div-1);  // Unlimited's late_pace shares the divisor
-    ++shed_since_probe;
     const double feed=window_feed_n>=10 ? window_feed_sum/(double)window_feed_n : 0.0;
     window_feed_sum=0;window_feed_n=0;
-    if(window==2) {shed_bad=0;shed_clean=0;return 0;}  // not a gameplay second (menu, load)
+    if(window==2) {shed_bad=shed_clean=shed_headroom_clean=0;return 0;}  // menu, load
+    ++shed_since_probe;
     if(window==1) {
-        shed_clean=0;shed_full_clean=0;
+        shed_clean=0;shed_headroom_clean=0;shed_full_clean=0;
         // D17AR3 part 4: a step up that falls behind in its first seconds goes
         // back after one slow second, so a probe costs the game less speed.
         if(++shed_bad<(shed_since_probe<=10 ? 1 : 2)) return 0;
@@ -1776,8 +1805,28 @@ int replay_load_window(int window) {
         // after a long clean run. Probing the same heavy view slowed the game
         // for a second each time (slot 10's jetpack view at 180 Hz).
         const bool lighter=feed>0.0 && shed_feed_ms>0.0 && feed<shed_feed_ms*0.75;
-        if(++shed_clean>=(lighter ? 5 : 30)*shed_backoff) {
+        // Stopping movement/combat can free emulation CPU without changing
+        // the scene's per-image feed cost. Waiting only for cheaper geometry
+        // kept the camera at the reduced rate for 30+ seconds in that case.
+        // Estimate the extra main-thread feed cost of the next faster rate,
+        // per guest field. Require twice that measured idle budget plus a
+        // margin. On a 60 Hz display the first shed halves the cadence, so
+        // probe sooner when measured headroom stays high. Higher rates and
+        // failed probes keep the normal backoff.
+        const double extra_feeds=seen_hz/(double)std::max(1,pace_div-1);
+        const double extra_ms=extra_feeds*std::max(feed,feed_ms)/59.94;
+        static const bool recover_headroom=[]{const char* e=std::getenv("DNTTK_REPLAY_RECOVERY_HEADROOM");return !(e && e[0]=='0');}();
+        const bool headroom=recover_headroom && continuous_timeline() && seen_hz>0 && feed>0 &&
+            response_slack>=0.5+2.0*extra_ms;
+        shed_headroom_clean=(lighter || headroom) ? shed_headroom_clean+1 : 0;
+        const bool restoring_60=target_hz!=-1 && pace_div==2 &&
+            seen_hz>=29.0 && seen_hz<=30.5;
+        const int headroom_seconds=restoring_60 && shed_backoff==1 ? 2 : 5;
+        ++shed_clean;
+        if(shed_headroom_clean>=headroom_seconds*shed_backoff ||
+           shed_clean>=30*shed_backoff) {
             --pace_div;--shed_steps;shed_clean=0;shed_since_probe=0;++shed_probes;
+            shed_headroom_clean=0;
             pace_clean=0;pace_presents=pace_bad=0;psx_mod_set_present_divisor(pace_div);++pace_changes;
             pace_log("emulation keeping up, trying faster",0,shed_backoff);
         }

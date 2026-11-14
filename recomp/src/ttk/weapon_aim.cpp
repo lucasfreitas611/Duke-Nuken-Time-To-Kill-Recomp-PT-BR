@@ -28,6 +28,8 @@ static unsigned hidden_markers, assisted_shots;
 static bool last_assisted;
 static unsigned close_retractions;
 static uint32_t aim_vector, aim_origin, beam_origins;
+void aim_render_bindings(uint32_t out[3]) {out[0]=aim_vector;out[1]=aim_origin;out[2]=beam_origins;}
+void aim_render_load_bindings(const uint32_t in[3]) {aim_vector=in[0];aim_origin=in[1];beam_origins=in[2];}
 void aim_render_prepare() {
     // Populate contents only when used; reserve stable host pointers before
     // replay workers fork so first shots cannot force a synchronous restart.

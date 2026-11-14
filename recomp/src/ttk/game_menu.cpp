@@ -376,6 +376,8 @@ std::vector<Screen> make_screens() {
         {"FRAME RATE",Section::Controls,"frame_rate","DNTTK_FRAME_RATE",true,"AUTO MATCHES THE DISPLAY UP TO 240 FPS. GAME SPEED NEVER CHANGES",
          {{"AUTO","auto","\"auto\""},{"DISPLAY","display","\"display\""},{"30","30","\"30\""},{"60","60","\"60\""},{"120","120","\"120\""},{"144","144","\"144\""},
           {"165","165","\"165\""},{"180","180","\"180\""},{"240","240","\"240\""},{"UNLIMITED","unlimited","\"unlimited\""}},0},
+        {"VSYNC",Section::Controls,"vsync","DNTTK_VSYNC",false,"SYNC TO DISPLAY. REDUCES TEARING, NEXT LAUNCH",
+         {{"ON","on","\"on\""},{"OFF","off","\"off\""}},0},
         // D17AR6: the world renderer (run.py maps it to the D17AM/D17AR switches).
         {"RENDERER",Section::Controls,"world_renderer","DNTTK_WORLD_RENDERER",false,"POLYMORPH: OUR RENDERER. CLASSIC: THE ORIGINAL DRAWING",
          {{"POLYMORPH","polymorph","\"polymorph\""},{"CLASSIC","classic","\"classic\""}},0},
@@ -455,6 +457,10 @@ std::vector<Screen> make_screens() {
          {{"ORIGINAL","original","\"original\""},{"CORRECTED","corrected","\"corrected\""}},0},
         {"TEXTURES",Section::Controls,"texture_precision","DNTTK_TEXTURE_PRECISION",false,"CORRECTED: NO TEXTURE WARP",
          {{"ORIGINAL","original","\"original\""},{"CORRECTED","corrected","\"corrected\""}},0},
+        {"TEXTURE ART",Section::Controls,"texture_set","DNTTK_TEXTURE_SET",false,"FIRST LEVEL PILOT. OPENGL, NEXT LAUNCH",
+         {{"ORIGINAL","original","\"original\""},{"REALISTIC FULL","realistic","\"realistic\""}},0},
+        {"ANTIALIASING",Section::Controls,"antialias","DNTTK_ANTIALIAS",false,"SMOOTH: EDGES AND DISTANT TEXTURES. NEXT LAUNCH",
+         {{"OFF","off","\"off\""},{"SMOOTH","smooth","\"smooth\""}},0},
         heading("PERFORMANCE"),
         {"CPU SPEED",Section::Controls,"cpu_overclock","PSX_CPU_OVERCLOCK",false,"150 KEEPS BUSY SCENES SMOOTH. 100 IS THE ORIGINAL",
          {{"100","100","100"},{"125","125","125"},{"150","150","150"},{"175","175","175"},{"200","200","200"}},2},
@@ -1765,7 +1771,7 @@ const char* needs(const Row& r) {
     if((k=="shoulder" || k=="camera_distance" || k=="weapon_aim") && is("camera","original")) return "NEEDS CAMERA INDEPENDENT, IN ADVANCED";
     if(k=="crosshair" && is("red_dot","1")) return "RED DOT ON HIDES THE MODERN CROSSHAIR";
     if(k=="crosshair" && is("weapon_aim","original")) return "NEEDS WEAPON AIM VIEW, IN ADVANCED";
-    if((k=="internal_scale" || k=="geometry_precision" || k=="texture_precision") && is("renderer","software")) return "NEEDS BACKEND OPENGL, IN ADVANCED";
+    if((k=="internal_scale" || k=="geometry_precision" || k=="texture_precision" || k=="texture_set" || k=="antialias") && is("renderer","software")) return "NEEDS BACKEND OPENGL, IN ADVANCED";
     return nullptr;
 }
 void draw_settings(Guest& g,const Geometry& geo) {

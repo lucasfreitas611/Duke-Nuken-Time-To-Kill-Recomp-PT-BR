@@ -487,6 +487,13 @@ bool input_take_jump() {
 void input_event(const SDL_Event& e) {
     if (!window) return;
 #if defined(PSX_SDL3)
+    // Private scripted performance routes must not capture the user's mouse
+    // motion or toggle perspective while they type in another application.
+    static const bool isolated=std::getenv("DNTTK_TEST_INPUT") && std::getenv("DNTTK_TEST_ISOLATED");
+    if(isolated && (((e.type==SDL_KEYDOWN || e.type==SDL_KEYUP) && e.key.which!=0xfffffffeu) ||
+        ((e.type==SDL_MOUSEBUTTONDOWN || e.type==SDL_MOUSEBUTTONUP) && e.button.which!=0xfffffffeu) ||
+        (e.type==SDL_MOUSEMOTION && e.motion.which!=0xfffffffeu) ||
+        (e.type==SDL_MOUSEWHEEL && e.wheel.which!=0xfffffffeu)))return;
     if ((e.type == SDL_EVENT_WINDOW_FOCUS_LOST || e.type == SDL_EVENT_WINDOW_MINIMIZED)
         && e.window.windowID == SDL_GetWindowID(window)) {
         focused = false; input_release(); return;
@@ -1082,6 +1089,9 @@ void input_frame() {
             }
             for(int i=0;i<2;++i) if(wheel_now[i] && !wheel_was[i] && window) {
                 SDL_Event e{};e.type=SDL_MOUSEWHEEL;e.wheel.windowID=SDL_GetWindowID(window);e.wheel.y=i?-1:1;
+#if defined(PSX_SDL3)
+                e.wheel.which=0xfffffffeu;
+#endif
                 SDL_PushEvent(&e);
             }
             wheel_was[0]=wheel_now[0];wheel_was[1]=wheel_now[1];
@@ -1093,6 +1103,7 @@ void input_frame() {
             e.key.windowID=SDL_GetWindowID(window);
 #if defined(PSX_SDL3)
             e.key.scancode=named[i].code;
+            e.key.which=0xfffffffeu;
 #else
             e.key.keysym.scancode=named[i].code;
 #endif
@@ -1605,7 +1616,7 @@ uint16_t input_last_pad() {return last_pad;}
 }
 extern "C" const char* ttk_fast_timing_json(void);
 extern "C" const char* ttk_input_debug_json() {
-    static char buffer[10240];
+    static char buffer[32768]; // Encloses controls and its graphics diagnostics.
     const auto& f = ttk::input_snapshot(ttk::Context::Gameplay);
     // D19G: the live binding codes, in action order.
     static char binds_text[512];

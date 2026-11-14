@@ -2,6 +2,13 @@
 #include "bio_mask_mesh.h"
 #include <cstdlib>
 #include <string_view>
+#ifdef _WIN32
+static int setenv(const char* name,const char* value,int overwrite) {
+    if(!overwrite && std::getenv(name))return 0;
+    return _putenv_s(name,value);
+}
+static int unsetenv(const char* name) {return _putenv_s(name,"");}
+#endif
 static unsigned precision_timeline_invalidations;
 extern "C" void pgxp_invalidate_all(void) {++precision_timeline_invalidations;}
 extern "C" {int g_pgxp_mesh_active=0;}
@@ -31,6 +38,8 @@ extern "C" int pgxp_mesh_vertex(uint32_t addr,uint32_t,int32_t* x,int32_t* y,uin
 static uint8_t ram[0x200000];
 static PSXModFunctionEntryCallback near_hook;
 static bool live_eye=false,modern=true,live_third=false,duke=false,interaction=false,test_viewmodel=false;
+static bool redraw_only_live=false;
+namespace ttk {bool live_frame_redraw_only(){return redraw_only_live;}}
 static ttk::LimbOwner test_owner=ttk::LimbOwner::DisplayHand;
 static int test_part=0x0f;
 static double body_coverage=1;
@@ -297,6 +306,51 @@ static void packet_contracts(const char* executable) {
             assert(next!=saved && next>=arena+want*region && next<arena+(want+1)*region);
             assert(next==arena+want*region && psx_mod_read_word(mirror)==want+tag);
             for(int i=1;i<13;++i) assert(psx_mod_read_word(saved+4*i)==copy[i]);
+            // Exhaustion must leave the source mesh and guest GTE intact. The
+            // diagnostic ring must wrap without allocating packets or RAM.
+            const auto resume=ttk::near_clip_frame_state();
+            const uint32_t mirror_before_budget_fixture=psx_mod_read_word(mirror);
+            const auto digest_before_budget_fixture=packet_digest;
+            auto exhausted=resume;exhausted.host_bytes=0xffffffffu;
+            ttk::near_clip_load_frame_state(exhausted);
+            const auto corners=host_corners.size();
+            for(int i=0;i<20;++i) {
+                d.gpr[4]=mesh;const auto before=d;
+                observed_hook(&d,0x80011020);
+                assert(d.gpr[4]==mesh && host_corners.size()==corners);
+                assert(std::memcmp(d.gte_ctrl,before.gte_ctrl,sizeof d.gte_ctrl)==0);
+            }
+            const std::string diagnostics=ttk::near_clip_debug_json();
+            assert(diagnostics.find("\"budget_event_count\":20,")!=std::string::npos);
+            size_t events=0,pos=0;
+            while((pos=diagnostics.find("\"reason\":\"unified_downgrade\"",pos))!=std::string::npos){++events;++pos;}
+            assert(events==16);
+            std::printf("budget_diagnostics=%s\n",diagnostics.c_str());
+            // Loading has a populated backdrop OT and no scene composition.
+            // Only an authenticated loading entry after a flip renews its arena.
+            for(uint32_t ra:{0x8001c49cu,0x8002343cu,0x80025818u}) {
+                ttk::near_clip_load_frame_state(exhausted);
+                CPUState logo{};logo.gpr[31]=ra;
+                observed_hook(&logo,0x80025554u);
+                assert(ttk::near_clip_frame_state().host_bytes==0xffffffffu); // same frame
+                ttk::near_clip_flip();logo.gpr[31]=ra+4;
+                observed_hook(&logo,0x80025554u);
+                assert(ttk::near_clip_frame_state().host_bytes==0xffffffffu);
+                logo.gpr[31]=ra;modern=false;
+                observed_hook(&logo,0x80025554u);
+                assert(ttk::near_clip_frame_state().host_bytes==0xffffffffu);
+                modern=true;observed_hook(&logo,0x80025554u);
+                assert(ttk::near_clip_frame_state().host_bytes==0);
+                const auto fresh=ttk::near_clip_frame_state();
+                auto occupied=fresh;occupied.host_bytes=400;
+                ttk::near_clip_load_frame_state(occupied);
+                observed_hook(&logo,0x80025554u);
+                assert(ttk::near_clip_frame_state().host_bytes==400);
+            }
+            std::puts("PASS: loading arena renewal, three callers, same-frame, foreign caller and Vanilla guards");
+            ttk::near_clip_load_frame_state(resume);
+            word(mirror,mirror_before_budget_fixture);
+            packet_digest=digest_before_budget_fixture;
         }
         // D17AN: with unified geometry every water tile, even a safe distant
         // one the original draws itself, is taken and depth-tested at its
@@ -339,7 +393,7 @@ static void packet_contracts(const char* executable) {
         {
             constexpr uint32_t mdl=0x80166000,mv=0x80166100,rec=0x80166200,pk=0x80166300;
             auto half=[](uint32_t a,uint16_t v){psx_mod_write_byte(a,v&0xff);psx_mod_write_byte(a+1,v>>8);};
-            ttk::NearGte g{};for(int i=0;i<3;++i) g.r[i][i]=4096;g.tr[2]=2000;g.h=256;
+            ttk::NearGte g{};for(int i=0;i<3;++i) g.r[i][i]=4096;g.r[0][1]=123;g.tr[2]=2000;g.h=256;
             const int16_t vx[4]={-100,100,-100,100},vz[4]={-100,-100,100,100};
             half(mdl+2,4);word(mdl+0xc,mv);
             uint32_t sxy[4];
@@ -352,7 +406,7 @@ static void packet_contracts(const char* executable) {
                 word(pk,9u<<24);word(pk+4,0x2c808080u);
                 for(int i=0;i<4;++i) {word(pk+8+8*i,sxy[i]);word(pk+12+8*i,(i==0?0x7ac0u:i==1?0x1cu:0u)<<16|0x2020u);}
             };
-            auto mc=reset();mc.gte_ctrl[7]=2000;mc.gpr[31]=0x8002e06cu;mc.gpr[4]=mdl;mc.gpr[5]=rec;
+            auto mc=reset();mc.gte_ctrl[0]=4096u|(123u<<16);mc.gte_ctrl[7]=2000;mc.gpr[31]=0x8002e06cu;mc.gpr[4]=mdl;mc.gpr[5]=rec;
             observed_hook(&mc,0x8002d848);
             assert(psx_mod_read_half(rec+6)==0); // near flag cleared (0x10), screen flag too
             packet();mc.gpr[31]=0x8002d114u;mc.gpr[4]=600<<3;mc.gpr[5]=pk;
@@ -364,6 +418,26 @@ static void packet_contracts(const char* executable) {
             // test-only colour pass (in the one decal slot).
             const int depth_corners=observed_depth_only-depth_only_before,colour_corners=observed_test_only-test_only_model;
             assert(depth_corners>0 && depth_corners==colour_corners && (int)host_corners.size()==2*depth_corners);
+            const char* exact_env=std::getenv("DNTTK_DECAL_EXACT");
+            const bool exact=exact_env && (std::string_view(exact_env)=="0" || std::string_view(exact_env)=="1")
+                ? std::string_view(exact_env)=="1" : pgxp_mesh_geometry()!=0;
+            assert(ttk::near_exact_decal_screen()==exact);
+            double maximum_error=0;
+            for(const auto& v:host_corners) {
+                const int index=(v.z>2000?2:0)+(v.x>0?1:0);
+                const auto projected=ttk::near_project(g,vx[index],100,vz[index]);
+                const double expected_x=g.h*projected.view[0]/projected.view[2];
+                const double expected_y=g.h*projected.view[1]/projected.view[2];
+                maximum_error=std::max(maximum_error,std::max(std::abs(v.x/65536.0-expected_x),std::abs(v.y/65536.0-expected_y)));
+                if(exact) {
+                    assert(std::abs(v.x/65536.0-expected_x)<=0.51/65536.0);
+                    assert(std::abs(v.y/65536.0-expected_y)<=0.51/65536.0);
+                } else {
+                    assert(v.x==(pgxp_mesh_geometry()?projected.x16:int32_t(sx(projected.sxy))*65536));
+                    assert(v.y==(pgxp_mesh_geometry()?projected.y16:int32_t(sy(projected.sxy))*65536));
+                }
+            }
+            std::printf("decal_projection exact=%d maximum_error=%.9f native_pixels\n",exact?1:0,maximum_error);
             // Another transform (the sprite queue): not this model.
             packet();mc.gte_ctrl[7]=2100;host_corners.clear();observed_hook(&mc,0x8002bd48);
             assert(host_corners.empty() && (psx_mod_read_word(pk)>>24)==9);
@@ -552,24 +626,24 @@ static void packet_contracts(const char* executable) {
     // must remain ordinary depth-tested geometry; Vanilla never takes over.
     {
         live_eye=true;
-        const char* old_painter=std::getenv("DNTTK_SKY_PAINTER");
-        const std::string saved_painter=old_painter?old_painter:"";
-        setenv("DNTTK_SKY_PAINTER","1",1);
+        // The renderer reads this switch once at startup. Exercise on/off
+        // in separate processes, rather than changing a cached option here.
+        const char* painter_option=std::getenv("DNTTK_SKY_PAINTER");
+        const bool painter_enabled=!painter_option || std::string_view(painter_option)!="0";
+        uint64_t sky_projection_digest=14695981039346656037ull;
         for(int hp:{256,160,92}) for(uint32_t ra:{0x80038c94u,0x80038cf0u,0x80038da8u,0x80038e44u}) {
             for(bool semi:{false,true}) {
                 object_case(ra,100,true,false,0,500,semi,hp);
                 assert(psx_mod_read_word(ot+8)==0); // not the deferred weapon layer
-                const auto painter=host_corners;
-                for(const auto& v:painter) assert(v.z>0 && v.depth<0);
-                setenv("DNTTK_SKY_PAINTER","0",1);
-                object_case(ra,100,true,false,0,500,semi,hp);
-                assert(host_corners.size()==painter.size());
-                for(size_t j=0;j<painter.size();++j) {
-                    const auto& a=painter[j];const auto& b=host_corners[j];
-                    assert(a.word==b.word && a.x==b.x && a.y==b.y);
-                    assert(a.z==b.z && a.u==b.u && a.v==b.v && b.depth>0);
+                for(const auto& v:host_corners) {
+                    assert(v.z>0 && (painter_enabled?v.depth<0:v.depth>0));
+                    auto hash=[&](const void* p,size_t n) {
+                        const auto* bytes=static_cast<const unsigned char*>(p);
+                        for(size_t k=0;k<n;++k){sky_projection_digest^=bytes[k];sky_projection_digest*=1099511628211ull;}
+                    };
+                    hash(&v.word,sizeof v.word);hash(&v.x,sizeof v.x);hash(&v.y,sizeof v.y);
+                    hash(&v.z,sizeof v.z);hash(&v.u,sizeof v.u);hash(&v.v,sizeof v.v);
                 }
-                setenv("DNTTK_SKY_PAINTER","1",1);
             }
             object_case(ra+4,100,true,false,0,500,false,hp);
             for(const auto& v:host_corners) assert(v.depth>0);
@@ -580,7 +654,7 @@ static void packet_contracts(const char* executable) {
         for(const auto& v:host_corners) assert(v.depth>0);
         psx_mod_write_word(0x80038d74,original);++g_dirty_ram_code_gen;
         modern=false;live_eye=false;object_case(0x80038c94,100,false,false,0,500);modern=true;live_eye=true;
-        if(old_painter)setenv("DNTTK_SKY_PAINTER",saved_painter.c_str(),1);else unsetenv("DNTTK_SKY_PAINTER");
+        std::printf("sky_projection_digest=%016llx\n",(unsigned long long)sky_projection_digest);
         std::puts("PASS: D17AH sky painter depth, unchanged geometry/UVs, caller/identity/Vanilla guards");
     }
     // D14B: exercise real emitted mesh packets, including UV/depth metadata.
@@ -910,6 +984,14 @@ static void packet_contracts(const char* executable) {
         assert(!host_corners.empty()); // takeover: corner 1 unsafe
         for(const auto& v:host_corners) assert(v.depth<0); // painter depth
         assert((psx_mod_read_word(wpkt)>>24)==0); // native packet link zeroed
+        // A live image replaced by replay must keep the original packet and
+        // RAM untouched. Turning the lease off restores normal clipping.
+        word(wpkt,9u<<24);
+        std::vector<uint8_t> water_before(ram,ram+sizeof ram);
+        host_corners.clear();redraw_only_live=true;observed_hook(&wc,0x8002bc18);redraw_only_live=false;
+        assert(host_corners.empty() && std::memcmp(ram,water_before.data(),sizeof ram)==0);
+        observed_hook(&wc,0x8002bc18);
+        assert(!host_corners.empty() && (psx_mod_read_word(wpkt)>>24)==0);
         // Grid mismatch: corrupt one record SXY -> grid_reject, no host corners.
         word(wpkt,9u<<24); // restore packet header for repeated call
         word(wrw0,v0.sxy^1);
@@ -955,6 +1037,8 @@ static void packet_contracts(const char* executable) {
             assert(psx_mod_read_word(prev+8)==0x13u && psx_mod_read_word(cur+8)==0x1cu);
             rows();modern=false;flags_hook(0x8002f5b0,3);modern=true;
             assert(psx_mod_read_word(prev+8)==0x13u && psx_mod_read_word(cur+8)==0x1cu);
+            rows();redraw_only_live=true;flags_hook(0x8002f5b0,3);redraw_only_live=false;
+            assert(psx_mod_read_word(prev+8)==0x13u && psx_mod_read_word(cur+8)==0x1cu);
             half(wrgn+8,0);word(wstk+0x60,0);
         }
         // A tile the original would skip (near corners behind the eye, SZ 0)
@@ -983,7 +1067,6 @@ static void packet_contracts(const char* executable) {
         std::puts("D17AF/D17AM4 water_clip: painter depth takeover, grid mismatch, safe pass-through, near-flag clearing, skipped tiles depth-tested or dropped PASS");
     }
     live_eye=false;
-    std::printf("packet_digest=%016llx\n",(unsigned long long)packet_digest);
     std::puts("ttk-near-test owned packet contracts PASS");
 }
 // D17N: with Corrected textures, a world polygon whose corners all have exact
@@ -1206,5 +1289,6 @@ int main(int argc,char** argv) {
     biomask_packet_contracts();
     frozen_packet_contracts();
     water_clip_contracts();
+    std::printf("packet_digest=%016llx\n",(unsigned long long)packet_digest);
     std::puts("ttk-near-test PASS");
 }

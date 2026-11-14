@@ -245,7 +245,8 @@ struct Canvas {
 // item keeps its icon with the user's tick on the icon's bottom-right corner.
 void framed_icon(Canvas& c,const Sprite& frame,const MissionDef& d,int x,int y){
     c.stretch(frame,x,y,42,39);
-    if(const MissionArt* a=art_for(d.name))c.sprite(collected(d)?a->icon:a->missing,x+5,y+3,2);
+    if(const MissionArt* a=art_for(d.name))
+        c.stretch(collected(d)?a->icon:a->missing,x+5,y+3,32,32);
     if(used(d) && used_tick.w)c.sprite(used_tick,x+5+(16-used_tick.w)*2,y+3+(16-used_tick.h)*2,2);
 }
 unsigned found_count(){unsigned n=0;for(int i=0;i<slot_count;++i)n+=collected(*slots[i]);return n;}
@@ -385,9 +386,12 @@ extern "C" int ttk_inventory_image(const uint32_t** out,int* width,int* height,i
         int x=left+index++*slot;
         int cell_x=x+(slot-cell_w)/2;
         if(have_icons && icons[i].w) {
-            int iw=icons[i].w*2,ih=icons[i].h*2;
-            blit(icons[i].rgba.data(),icons[i].w,icons[i].h,
-                 cell_x+(cell_w-iw)/2,cell_top+(icon_box-ih)/2,w,h,2);
+            const Sprite& icon=icons[i];
+            const int edge=std::max(icon.w,icon.h);
+            const int size=std::min(icon_box,edge*2);
+            const int iw=std::max(1,icon.w*size/edge),ih=std::max(1,icon.h*size/edge);
+            blit_stretch(icon.rgba.data(),icon.w,icon.h,
+                         cell_x+(cell_w-iw)/2,cell_top+(icon_box-ih)/2,iw,ih,w,h);
         }
         if(flags[i]&2)for(int d=-2;d<=2;++d) {
             int mx=cell_x+cell_w-4,my=cell_top+4;

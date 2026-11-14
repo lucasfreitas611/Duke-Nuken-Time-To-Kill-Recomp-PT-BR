@@ -3,6 +3,12 @@
 // clip emitted oversized tiles, preserving their native painter slot/material.
 // Included inside near_clip.cpp's anonymous namespace after object().
 uint64_t water_seen=0,water_taken=0,water_guard_reject=0,water_grid_reject=0;
+uint64_t water_live_skipped=0;
+bool water_hidden_live_frame() {
+    // Developer A/B: retain the former live-water work in an isolated route.
+    static const bool skip=env_int("DNTTK_WATER_REDRAW_ONLY",1,0,1)!=0;
+    return skip && live_frame_redraw_only();
+}
 bool water_render_identity() {
     struct Guard {uint32_t address,size;const char* digest;};
     static const Guard guards[]={{0x8002ef90u,0xcc0u,
@@ -49,7 +55,7 @@ unsigned water_row_vertices(uint32_t region) {
 void water_near_flags(CPUState* cpu) {
     const uint32_t ra=cpu->gpr[31];
     const unsigned done=ra==0x8002f508u?0:ra==0x8002f5b0u?1:ra==0x8002f65cu?2:3;
-    if(done==3 || !water_live()) return;
+    if(done==3 || water_hidden_live_frame() || !water_live()) return;
     const uint32_t sp=cpu->gpr[29],region=cpu->gpr[21],row=cpu->gpr[30],triple=cpu->gpr[18];
     if(!water_valid(sp,0x94) || !water_valid(region,16) || triple<row || ((triple-row)&15)) return;
     const unsigned count=water_row_vertices(region);
@@ -59,6 +65,12 @@ void water_near_flags(CPUState* cpu) {
 void water_clip(CPUState* cpu) {
     if(cpu->gpr[31]!=0x8002fbb4u) return;
     ++water_seen;
+    // As with the host world pass, this live image is deliberately not shown:
+    // isolated replay workers produce its visible geometry. Re-clipping every
+    // water tile here emitted a second complete surface into an unused image.
+    // Retain the original game's draw/state work and let replay workers (where
+    // live_frame_redraw_only is false) run the exact correction unchanged.
+    if(water_hidden_live_frame()) {++water_live_skipped;return;}
     if(!water_live()) {++water_guard_reject;return;}
     auto valid=water_valid;
     const uint32_t packet=cpu->gpr[5],region=cpu->gpr[21],sp=cpu->gpr[29];

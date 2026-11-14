@@ -573,6 +573,53 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual(settings['profiles']['modernized']['controls']['geometry_precision'],'corrected')
         self.assertEqual(settings['profiles']['modernized']['controls']['texture_precision'],'original')
 
+    def test_vsync_persists_and_controls_native_and_replay_swaps(self):
+        with patch.object(Path,'is_file',return_value=True), patch.object(run.subprocess,'call',return_value=0) as launch, patch.object(run,'ensure_movie_shard'):
+            base=['--settings-file',str(self.path),'--no-session-log']
+            for display in ('windowed','borderless','exclusive'):
+                run.main(base+['--display',display,'--vsync','on'])
+                env=launch.call_args.kwargs['env']
+                self.assertEqual((env['DNTTK_VSYNC'],env['PSX_VSYNC'],env['PSX_REPLAY_VSYNC']),('on','1','1'))
+            run.main(base+['--vsync','off'])
+            run.main(base)
+            env=launch.call_args.kwargs['env']
+            self.assertEqual((env['DNTTK_VSYNC'],env['PSX_VSYNC'],env['PSX_REPLAY_VSYNC']),('off','0','0'))
+            profiles.menu_settings_path(self.path).write_text(json.dumps(dict(version=1,active='modernized',controls=dict(vsync='on'),presentation={})))
+            run.main(base)
+            self.assertEqual(launch.call_args.kwargs['env']['PSX_REPLAY_VSYNC'],'1')
+        legacy=dict(profiles.DEFAULT_CONTROLS)
+        legacy.pop('vsync')
+        self.assertEqual(profiles.validate_controls(legacy)['vsync'],'on')
+        with self.assertRaises(ValueError):profiles.validate_controls(dict(legacy,vsync='invalid'))
+
+    def test_texture_art_persists_and_backend_gates(self):
+        with patch.object(Path,'is_file',return_value=True), patch.object(run.subprocess,'call',return_value=0) as launch, patch.object(run,'ensure_movie_shard'):
+            base=['--settings-file',str(self.path),'--no-session-log']
+            run.main(base+['--texture-set','realistic','--antialias','smooth'])
+            env=launch.call_args.kwargs['env']
+            self.assertEqual(env['DNTTK_TEXTURE_SET'],'realistic')
+            self.assertEqual(env['DNTTK_ANTIALIAS'],'smooth')
+            self.assertTrue(env['DNTTK_TEXTURE_PACK'].endswith('pack.ttkpack'))
+            run.main(base+['--renderer','software'])
+            self.assertNotIn('DNTTK_TEXTURE_PACK',launch.call_args.kwargs['env'])
+            self.assertEqual(launch.call_args.kwargs['env']['DNTTK_ANTIALIAS'],'off')
+            run.main(base+['--renderer','opengl','--vanilla'])
+            self.assertNotIn('DNTTK_TEXTURE_PACK',launch.call_args.kwargs['env'])
+            self.assertEqual(launch.call_args.kwargs['env']['DNTTK_ANTIALIAS'],'off')
+            run.main(base+['--renderer','opengl'])
+            self.assertEqual(launch.call_args.kwargs['env']['DNTTK_TEXTURE_SET'],'realistic')
+            run.main(base+['--texture-set','original'])
+            self.assertNotIn('DNTTK_TEXTURE_PACK',launch.call_args.kwargs['env'])
+        legacy=dict(profiles.DEFAULT_CONTROLS)
+        legacy.pop('texture_set')
+        legacy.pop('antialias')
+        self.assertEqual(profiles.validate_controls(legacy)['texture_set'],'original')
+        self.assertEqual(profiles.validate_controls(legacy)['antialias'],'off')
+        with self.assertRaises(ValueError):
+            profiles.validate_controls(dict(legacy,antialias='invalid'))
+        with self.assertRaises(ValueError):
+            profiles.validate_controls(dict(legacy,texture_set='unknown'))
+
     def test_defaults_and_independence(self):
         settings, notices = profiles.load(self.path)
         self.assertEqual(settings['active'], 'modernized')
@@ -848,7 +895,7 @@ class CameraPreferencesTest(unittest.TestCase):
             subprocess.run(cmd+['--camera','original','--mouse-sensitivity','0.25','--invert-y','on'],check=True,capture_output=True)
             raw=path.read_bytes()
             result,_=profiles.load(path)
-            self.assertEqual(result['profiles']['modernized']['controls'],{**profiles.CONTROLLER_DEFAULTS, **profiles.SOUND_DEFAULTS,'status_bars':'full','first_person_legs':'on','first_person_fov':90,'scheme':'modern','camera':'original','mouse_sensitivity':0.25,'invert_y':True,'weapon_aim':'view','crosshair':True,'red_dot':False,'aim_assist':'off','jetpack':'modern','camera_distance':0,'shoulder':'center','view':'third','widescreen':'16:9','cpu_overclock':150,'cpu_timing':'fast','jump':'assisted','frame_rate':'auto','view_bob':'on','geometry_precision':'original','texture_precision':'original','draw_distance':'extended','world_renderer':'polymorph','steroids':'portable','jump_walls':'slide','landing':'modern','dynamite':'modern','auto_bio_mask':'on','night_vision':'modern','swimming':'modern','swim_view':'first','jetpack_view':'first','push_view':'first','ladder_view':'first','pole_view':'first','mantle_view':'first','overhead_view':'first','wall_view':'first','wall_backflip':'modern','crouch':'modern'})
+            self.assertEqual(result['profiles']['modernized']['controls'],{**profiles.CONTROLLER_DEFAULTS, **profiles.SOUND_DEFAULTS,'texture_set':'original','antialias':'off','vsync':'on','status_bars':'full','first_person_legs':'on','first_person_fov':90,'scheme':'modern','camera':'original','mouse_sensitivity':0.25,'invert_y':True,'weapon_aim':'view','crosshair':True,'red_dot':False,'aim_assist':'off','jetpack':'modern','camera_distance':0,'shoulder':'center','view':'third','widescreen':'16:9','cpu_overclock':150,'cpu_timing':'fast','jump':'assisted','frame_rate':'auto','view_bob':'on','geometry_precision':'original','texture_precision':'original','draw_distance':'extended','world_renderer':'polymorph','steroids':'portable','jump_walls':'slide','landing':'modern','dynamite':'modern','auto_bio_mask':'on','night_vision':'modern','swimming':'modern','swim_view':'first','jetpack_view':'first','push_view':'first','ladder_view':'first','pole_view':'first','mantle_view':'first','overhead_view':'first','wall_view':'first','wall_backflip':'modern','crouch':'modern'})
             invalid=subprocess.run(cmd+['--mouse-sensitivity','nan'],capture_output=True)
             self.assertNotEqual(invalid.returncode,0);self.assertEqual(path.read_bytes(),raw)
             subprocess.run(cmd+['--vanilla'],check=True,capture_output=True)
@@ -858,7 +905,7 @@ class CameraPreferencesTest(unittest.TestCase):
     def test_terminal_camera_edit(self):
         replies=iter(['7','independent 0.2 on','5'])
         edited=profiles.menu(profiles.defaults(),lambda _:next(replies),lambda _:None)
-        self.assertEqual(edited['profiles']['modernized']['controls'],{**profiles.CONTROLLER_DEFAULTS, **profiles.SOUND_DEFAULTS,'status_bars':'full','first_person_legs':'on','first_person_fov':90,'scheme':'modern','camera':'independent','mouse_sensitivity':0.2,'invert_y':True,'weapon_aim':'view','crosshair':True,'red_dot':False,'aim_assist':'off','jetpack':'modern','camera_distance':0,'shoulder':'center','view':'third','widescreen':'16:9','cpu_overclock':150,'cpu_timing':'fast','jump':'assisted','frame_rate':'auto','view_bob':'on','geometry_precision':'original','texture_precision':'original','draw_distance':'extended','world_renderer':'polymorph','steroids':'portable','jump_walls':'slide','landing':'modern','dynamite':'modern','auto_bio_mask':'on','night_vision':'modern','swimming':'modern','swim_view':'first','jetpack_view':'first','push_view':'first','ladder_view':'first','pole_view':'first','mantle_view':'first','overhead_view':'first','wall_view':'first','wall_backflip':'modern','crouch':'modern'})
+        self.assertEqual(edited['profiles']['modernized']['controls'],{**profiles.CONTROLLER_DEFAULTS, **profiles.SOUND_DEFAULTS,'texture_set':'original','antialias':'off','vsync':'on','status_bars':'full','first_person_legs':'on','first_person_fov':90,'scheme':'modern','camera':'independent','mouse_sensitivity':0.2,'invert_y':True,'weapon_aim':'view','crosshair':True,'red_dot':False,'aim_assist':'off','jetpack':'modern','camera_distance':0,'shoulder':'center','view':'third','widescreen':'16:9','cpu_overclock':150,'cpu_timing':'fast','jump':'assisted','frame_rate':'auto','view_bob':'on','geometry_precision':'original','texture_precision':'original','draw_distance':'extended','world_renderer':'polymorph','steroids':'portable','jump_walls':'slide','landing':'modern','dynamite':'modern','auto_bio_mask':'on','night_vision':'modern','swimming':'modern','swim_view':'first','jetpack_view':'first','push_view':'first','ladder_view':'first','pole_view':'first','mantle_view':'first','overhead_view':'first','wall_view':'first','wall_backflip':'modern','crouch':'modern'})
 
     def test_view_bob_menu_and_migration(self):
         replies=iter(['b','subtle','b','wobbly','5'])

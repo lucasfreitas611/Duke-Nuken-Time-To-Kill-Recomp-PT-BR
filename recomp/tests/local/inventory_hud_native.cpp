@@ -16,10 +16,18 @@ static uint32_t loads;
 extern "C" uint32_t psx_mod_savestate_loads(){return loads;}
 extern "C" uint16_t psx_mod_read_half(uint32_t a){return a==0x800bcbb0?1:menu;}
 int main(int argc,char**argv) {
-    assert(argc>=3);setenv("DNTTK_FONT_PACK",argv[1],1); // unused by strip now, kept for link
-    setenv("DNTTK_INV_ICONS",argv[2],1);
-    if(argc>=4)setenv("DNTTK_INV_DIGITS",argv[3],1);
-    if(argc>=5)setenv("DNTTK_MISSION_ITEMS",argv[4],1);
+    auto set_pack=[](const char* name,const char* value) {
+#ifdef _WIN32
+        return _putenv_s(name,value);
+#else
+        return setenv(name,value,1);
+#endif
+    };
+    assert(argc>=3);
+    assert(set_pack("DNTTK_FONT_PACK",argv[1])==0);
+    assert(set_pack("DNTTK_INV_ICONS",argv[2])==0);
+    if(argc>=4)assert(set_pack("DNTTK_INV_DIGITS",argv[3])==0);
+    if(argc>=5)assert(set_pack("DNTTK_MISSION_ITEMS",argv[4])==0);
     const char* dump=argc>=6?argv[5]:nullptr; // optional review PPMs (composited on grey)
     ttk::input.active=true;ttk::input.epoch=1;ttk::input.sequence=10;
     uint16_t flags[6]{},capacities[6]={0,9000,13500,18000,9000,10000};int16_t amount[6]{};

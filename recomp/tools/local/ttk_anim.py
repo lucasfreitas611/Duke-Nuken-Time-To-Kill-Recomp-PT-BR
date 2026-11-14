@@ -113,7 +113,8 @@ def parse_hierarchies(hie):
     return out
 
 
-PRIM_SIZES = {0x2c: 16, 0x24: 16, 0x28: 8, 0x20: 8, 0x30: 12}
+PRIM_SIZES = {0x20: 8, 0x28: 8, 0x30: 12, 0x38: 12,
+              0x24: 16, 0x2c: 16, 0x34: 20, 0x3c: 20}
 
 
 def parse_model(mod, index):
@@ -137,13 +138,13 @@ def parse_model(mod, index):
         for _ in range(n):
             b = mod[p:p + size]
             p += size
-            if code in (0x2c, 0x24):
-                k = 4 if code == 0x2c else 3
+            if code in (0x24, 0x2c, 0x34, 0x3c):
+                k = 4 if code & 8 else 3
                 uv = [(b[4], b[5]), (b[8], b[9]), (b[12], b[13]), (b[14], b[15])][:k]
                 prims.append(dict(code=code, idx=list(b[:k]), uv=uv, clut=struct.unpack_from('<H', b, 6)[0],
                                   tpage=struct.unpack_from('<H', b, 10)[0]))
             else:
-                k = 4 if code == 0x28 else 3
+                k = 4 if code & 8 else 3
                 prims.append(dict(code=code, idx=list(b[:k]), color=list(b[4:7])))
     return dict(index=index, vertices=[list(v[:3]) for v in verts], bbox=list(struct.unpack_from('<6h', mod, o + 0x18)),
                 prims=prims)
@@ -386,7 +387,7 @@ def render(group, hierarchy, mats, path, size=(480, 640), yaw=0.0, pitch=0.25, d
             if 'uv' not in p:
                 continue
             idx = p['idx']
-            corners = [(0, 1, 2), (1, 3, 2)] if p['code'] == 0x2c else [(0, 1, 2)]
+            corners = [(0, 1, 2), (1, 3, 2)] if len(p['idx']) == 4 else [(0, 1, 2)]
             for a, b, c in corners:
                 tris.append((verts[[idx[a], idx[b], idx[c]]], np.array([p['uv'][a], p['uv'][b], p['uv'][c]], float),
                              p['tpage'], p['clut']))
@@ -506,7 +507,7 @@ def blender_model_json(group, hierarchy_index):
                 continue
             key = f"{p['tpage'] & 0x1ff:04x}_{p['clut']:04x}"
             pages[key] = (p['tpage'], p['clut'])
-            order = [0, 1, 3, 2] if p['code'] == 0x2c else [0, 1, 2]
+            order = [0, 1, 3, 2] if len(p['idx']) == 4 else [0, 1, 2]
             faces.append(dict(idx=[p['idx'][k] for k in order], uv=[list(p['uv'][k]) for k in order], page=key))
         meshes.append(dict(joint=j, vertices=[list(np.asarray(v, float) + rest[j][1]) for v in model['vertices']]
                            if model else [], faces=faces))

@@ -12,10 +12,9 @@ from pathlib import Path
 import struct
 
 FIELDS = ('depth', 'page_x', 'page_y', 'u', 'v', 'w', 'h', 'cx', 'cy', 'iw', 'ih')
-MAGIC = b'TTKTX01\0'
 
 
-def validate(m):
+def validate(m, version=1):
     for key in FIELDS:
         if type(m.get(key)) is not int or m[key] < 0:
             raise ValueError(f'{key}: nonnegative integer required')
@@ -26,34 +25,37 @@ def validate(m):
         raise ValueError('region must fit one non-wrapping texture page')
     ppw = 4 >> d
     pn = (16, 256, 0)[d]
-    if u % ppw or w % ppw or px + (u+w)//ppw > 1024 or py+v+h > 512:
+    if (version == 1 and (u % ppw or w % ppw)) or px + (u+w+ppw-1)//ppw > 1024 or py+v+h > 512:
         raise ValueError('region must be word-aligned and fit VRAM')
     if cx > 1023 or cy > 511 or cx+pn > 1024:
         raise ValueError('CLUT must fit one VRAM row')
-    if not (1 <= iw <= 1024 and 1 <= ih <= 1024) or iw % w or ih % h or iw//w != ih//h:
+    if not (1 <= iw <= 1024 and 1 <= ih <= 1024) or (version == 1 and (iw % w or ih % h or iw//w != ih//h)):
         raise ValueError('replacement needs uniform integer scale, at most 1024x1024')
     return ppw, pn
 
 
-def decode(m, words, palette):
-    ppw, pn = validate(m)
-    if len(words) != m['w']//ppw*m['h'] or len(palette) != pn:
+def decode(m, words, palette, version=1):
+    ppw, pn = validate(m,version)
+    stride=(m['u']%ppw+m['w']+ppw-1)//ppw
+    if len(words) != stride*m['h'] or len(palette) != pn:
         raise ValueError('source/CLUT word count mismatch')
     rgb = bytearray()
     for y in range(m['h']):
         for x in range(m['w']):
-            word = words[y*(m['w']//ppw)+x//ppw]
-            raw = palette[(word >> ((x % ppw)*(16//ppw))) & ((1 << (16//ppw))-1)] if pn else word
+            xx=x+m['u']%ppw
+            word = words[y*stride+xx//ppw]
+            raw = palette[(word >> ((xx % ppw)*(16//ppw))) & ((1 << (16//ppw))-1)] if pn else word
             rgb.extend(((raw >> shift) & 31)*255//31 for shift in (0, 5, 10))
     return bytes(rgb)
 
 
-def build(m, words, palette, rgb):
-    validate(m)
-    decode(m, words, palette)  # validates source sizes too
-    if len(rgb) != m['iw']*m['ih']*3:
-        raise ValueError('replacement RGB size mismatch')
-    return MAGIC + struct.pack('<11I', *(m[k] for k in FIELDS)) + struct.pack(f'<{len(words)+len(palette)}H', *words, *palette) + rgb
+def build(m, words, palette, pixels, version=1):
+    if version not in (1,2,3): raise ValueError('unsupported specimen version')
+    validate(m,version)
+    decode(m, words, palette,version)  # validates source sizes too
+    if len(pixels) != m['iw']*m['ih']*(4 if version==3 else 3):
+        raise ValueError('replacement pixel size mismatch')
+    return f'TTKTX{version:02}\0'.encode('ascii') + struct.pack('<11I', *(m[k] for k in FIELDS)) + struct.pack(f'<{len(words)+len(palette)}H', *words, *palette) + pixels
 
 
 def main():
@@ -68,6 +70,8 @@ def main():
     compile_p.add_argument('capture', type=Path)
     compile_p.add_argument('image', type=Path)
     compile_p.add_argument('output', type=Path)
+    compile_p.add_argument('--scale', type=int, choices=range(1, 33),
+                           help='compile the authored master at this integer native scale; source PNG is unchanged')
     a = p.parse_args()
     from PIL import Image
     if a.command == 'capture':
@@ -99,6 +103,14 @@ def main():
         with Image.open(a.image) as image:
             if 'A' in image.getbands() and image.getchannel('A').getextrema() != (255,255):
                 raise ValueError('RGB-only foundation: original game controls transparency; export opaque RGB art')
+            # Authoring masters need not have runtime dimensions. Normalize
+            # only the compiled RGB payload to a bounded, explicit texel budget.
+            if a.scale:
+                from PIL import Image
+                target = (m['w']*a.scale, m['h']*a.scale)
+                if max(target) > 1024:
+                    raise ValueError('compiled texture exceeds 1024x1024 budget')
+                image = image.resize(target, Image.Resampling.LANCZOS)
             m.update(iw=image.width,ih=image.height)
             validate(m)
             data=build(m,m['source_words'],m['palette_words'],image.convert('RGB').tobytes())

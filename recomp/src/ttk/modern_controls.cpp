@@ -1137,7 +1137,13 @@ static void overclock_lease() {
     using clk=std::chrono::steady_clock;
     static clk::time_point window_start,paused_until,settle_until;static uint64_t window_frame;static unsigned pauses;
     static uint32_t loads_seen=psx_mod_savestate_loads();
+    static uint32_t level_seen=~0u;
     const auto now=clk::now();const uint64_t frame=input_host_frame();
+    const uint32_t level=psx_mod_read_word(0x800be570u);
+    if(level!=level_seen) {
+        level_seen=level;settle_until=now+std::chrono::seconds(3);
+        window_start=now;window_frame=frame;
+    }
     if(psx_mod_savestate_loads()!=loads_seen) {loads_seen=psx_mod_savestate_loads();settle_until=now+std::chrono::seconds(3);}
     if(window_start.time_since_epoch().count()==0 || frame<window_frame) {window_start=now;window_frame=frame;}
     const double dt=std::chrono::duration<double>(now-window_start).count();
@@ -1866,6 +1872,7 @@ struct RenderState {
     FirePose fire_poses[32];
     RifleReload rifle_reload; RunArms run_arms; unsigned weapon_slot;
     uint32_t weapon_matrix, hidden_matrix;
+    uint32_t presentation,ignored,reach,steroid;
     bool kick_active; unsigned kick_frame; uint32_t kick_point, leg_matrices;
     // D17AR2: the live frame's host visibility switch (the console toggle
     // changes only this process; redraw workers forked before it).
@@ -1923,6 +1930,7 @@ void render_state_save(void* out) {
     std::memcpy(r.live_torso,live_torso,sizeof live_torso); r.kick=kick;
     std::memcpy(r.fire_poses,fire_poses,sizeof fire_poses);
     r.weapon_matrix=weapon_matrix; r.hidden_matrix=hidden_matrix;
+    r.presentation=presentation_vector;r.ignored=ignored_pickup;r.reach=reach_far_point;r.steroid=steroid_left_object;
     r.kick_active=kick_active; r.kick_frame=kick_active ? kick_frame() : 0u;
     r.kick_point=kick_point; r.leg_matrices=leg_matrices;
     r.host_visibility=host_visibility_enabled();
@@ -1957,6 +1965,7 @@ void render_state_load(const void* in) {
     std::memcpy(live_torso,r.live_torso,sizeof live_torso); kick=r.kick;
     std::memcpy(fire_poses,r.fire_poses,sizeof fire_poses);
     weapon_matrix=r.weapon_matrix; hidden_matrix=r.hidden_matrix;
+    presentation_vector=r.presentation;ignored_pickup=r.ignored;reach_far_point=r.reach;steroid_left_object=r.steroid;
     kick_active=r.kick_active; override_kick_frame=r.kick_frame;
     kick_point=r.kick_point; leg_matrices=r.leg_matrices;
     host_vis_override=r.host_visibility?1:0;
@@ -2022,7 +2031,9 @@ LimbPresentation first_person_limb_presentation() {
 bool first_person_interaction_drawing() {return first_person_limb_presentation().interaction();}
 bool first_person_weapon_drawing() {return first_person_limb_presentation().viewmodel();}
 const char* controls_debug_json() {
-    static char buffer[8192];
+    // Includes the bounded near-clip budget history; leave room for the full
+    // nested report so a busy scene cannot produce truncated JSON.
+    static char buffer[24576];
     std::snprintf(buffer,sizeof buffer,"{\"free_look\":{\"active\":%s,\"held\":%s,\"offset_yaw\":%.6f,\"offset_pitch\":%.6f},\"tight_camera\":{\"live\":%s,\"safe_boom\":%.2f,\"compressed\":%s,\"coverage\":%.4f},\"mouse_deg\":%.4f,\"edge_jumps\":%u,\"step_drops\":%u,\"run_offs\":%u,\"delayed_jumps\":%u,\"standing_takeoffs\":%u,\"swim_mantles\":%u,\"wade_jumps\":%u,\"swim_dives\":%u,\"swim_dive_stops\":%u,\"swim_paces\":%u,\"swimming\":\"%s\",\"swim_fire_masks\":%u,\"swim_fire_restores\":%u,\"swim_aims\":%u,\"swim_aim_restores\":%u,\"swim_arm_aims\":%u,\"swim_redraws\":%u,\"swim_fire_draws\":%u,\"ledge_assists\":%u,\"jet_updates\":%u,\"jet_hovers\":%u,\"jet_descents\":%u,\"jet_hold_captures\":%u,\"jet_root_nudges\":%u,\"jet\":%s,\"jet_scheme\":\"%s\",\"jet_classic\":%s,\"jet_classic_updates\":%u,\"push_masks\":%u,\"push_idle_masks\":%u,\"push_grab\":%s,\"ledge_reach_arms\":%u,\"air_mantles\":%u,\"hang_releases\":%u,\"lift_catches\":%u,\"turn_catches\":%u,\"drop_mantles\":%u,\"last_drop_rel\":%d,\"step_ups\":%u,\"mantle_upper_handoffs\":%u,\"mantle_upper_restores\":%u,\"last_step_rel\":%d,\"edge_postpones\":%u,\"jump_style\":\"%s\",\"air_steers\":%u,\"coyote_jumps\":%u,\"quick_takeoffs\":%u,\"air_cap\":%.0f,\"hang_settles\":%u,\"ceiling\":{\"ready\":%s,\"updates\":%u,\"turns\":%u,\"advances\":%u,\"drops\":%u},\"ladder_top\":{\"available\":%s,\"active\":%s,\"starts\":%u,\"mounts\":%u,\"aborts\":%u,\"leaps\":%u,\"leap_nudges\":%u,\"end_probes\":%u,\"end_hits\":%u,\"end_stops\":%u,\"mount_finishes\":%u,\"actor_exits\":%u,\"actor_exit_checks\":%u},\"pole\":{\"mount_starts\":%u,\"mounts\":%u,\"mount_aborts\":%u,\"floor_rejects\":%u,\"stall_drops\":%u,\"mounting\":%s},\"identity_calls\":%llu,\"identity_checks\":%llu,\"identity_us\":%llu,\"selections\":%llu,\"jumps\":%llu,\"speed_changes\":%llu,\"moves\":%llu,\"probes\":%llu,\"cameras\":%llu,\"frame_window\":%u,\"refusals\":%llu,\"ready\":%s,\"swim\":%s,\"looks\":%llu,\"orbits\":%llu,\"yaw\":%.6f,\"pitch\":%.6f,\"radius\":%.3f,\"preferred_radius\":%.3f,\"shoulder_offset\":%.3f,\"recentering\":%s,\"recenters\":%llu,\"rest_pitch\":%.6f,\"key_look\":{\"hold\":%d,\"lock\":%s,\"returning\":%s,\"looks\":%llu,\"returns\":%llu,\"taps\":%llu},\"key_turn\":{\"hold\":%d,\"running\":%s,\"turns\":%llu},\"selected_item\":%u,\"last_weapon\":%u,\"crouch_entries\":%u,\"crouch_exits\":%u,\"crouch_blocked\":%u,\"facings\":%llu,\"arms\":%llu,\"orientations\":%llu,\"fp\":{\"action\":\"%s\",\"effective\":%s,\"requested\":%s,\"supported\":%s,\"blend\":%.3f,\"reason\":\"%s\",\"updates\":%llu,\"fallbacks\":%llu,\"follows\":%llu,\"head_hides\":%llu,\"head_reclaims\":%llu,\"head_flag\":%u,\"min_boom\":%u,\"projection\":%d,\"fov\":%s,\"projections\":%llu,\"near\":%s,\"weapon\":{\"enabled\":%s,\"hands\":%llu,\"draws\":%llu,\"flashes\":%llu,\"items\":%llu,\"readies\":%llu,\"pose\":\"%s\",\"recorded\":%llu,\"arm_hides\":%llu,\"fade_clears\":%llu,\"matrix\":%u},\"kick\":%s},\"aim\":%s,\"draw_distance\":%s,\"steroids\":%s,\"steroid_beat\":%s,\"pickup_select\":%s,\"run_click\":%s,\"powerups\":%s,\"jump_walls\":%s,\"landing\":%s,\"wall_backflip\":%s,\"dynamite\":%s}",
         free_look.active?"true":"false",free_look.held?"true":"false",free_look.x,free_look.y,
         third_person_camera_live()?"true":"false",tight_distance,tight_compressed?"true":"false",third_person_body_coverage(),sensitivity()*360/tau,

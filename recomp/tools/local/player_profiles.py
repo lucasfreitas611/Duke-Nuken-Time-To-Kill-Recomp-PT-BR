@@ -116,6 +116,9 @@ DEFAULT_CONTROLS = {'status_bars': 'full', 'scheme': 'modern', 'camera': 'indepe
 # fullscreen_mode is what F11 enters from a window.
 SOUND_DEFAULTS = dict(sound_master=-1, sound_effects=-1, sound_music=-1, sound_speech=-1, sound_mode=-1)
 CONTROLLER_DEFAULTS = dict(controller_speed=180, controller_deadzone=20, controller_invert_y=False, split_devices="two-pads")
+DEFAULT_CONTROLS['texture_set'] = 'original'
+DEFAULT_CONTROLS['antialias'] = 'off'
+DEFAULT_CONTROLS['vsync'] = 'on'
 DEFAULT_CONTROLS.update(SOUND_DEFAULTS)
 DEFAULT_CONTROLS.update(CONTROLLER_DEFAULTS)
 
@@ -139,11 +142,17 @@ def validate_controls(value):
         fov = value.get('first_person_fov', 90)
         if type(fov) not in (int, float) or not math.isfinite(fov) or not 60 <= fov <= 120:
             fov = 90
-        value = {**value, 'status_bars': value.get('status_bars') if valid_enum(value.get('status_bars'), ('full', 'borderless', 'hidden')) else 'full', 'first_person_fov': round(fov),
+        value = {**value, 'vsync': value.get('vsync', 'on'), 'antialias': value.get('antialias', 'off'), 'texture_set': value.get('texture_set', 'original'), 'status_bars': value.get('status_bars') if valid_enum(value.get('status_bars'), ('full', 'borderless', 'hidden')) else 'full', 'first_person_fov': round(fov),
                  'first_person_legs': value.get('first_person_legs') if valid_enum(value.get('first_person_legs'), ('on', 'off')) else 'on',
                  'world_renderer': value.get('world_renderer') if valid_enum(value.get('world_renderer'), WORLD_RENDERERS) else 'polymorph'}
     if not isinstance(value, dict) or set(value) != set(DEFAULT_CONTROLS):
         raise ValueError('Invalid camera preferences.')
+    if value['vsync'] not in ('on', 'off'):
+        raise ValueError('VSync must be on or off.')
+    if value['antialias'] not in ('off', 'smooth'):
+        raise ValueError('Antialias must be off or smooth.')
+    if value['texture_set'] not in ('original', 'realistic'):
+        raise ValueError('Texture set must be original or realistic.')
     validate_action_view(value['swim_view'])
     validate_action_view(value['jetpack_view'])
     validate_action_view(value['push_view'])
@@ -547,6 +556,9 @@ def describe(settings):
         lines.append(f"Push/pull view: {controls['push_view']} (when global view is first person)")
         lines.append(f"Jetpack view: {controls['jetpack_view']} (when global view is first person)")
         lines.append(f"Swimming view: {controls['swim_view']} (when global view is first person)")
+        lines.append(f"VSync: {controls['vsync']} (display synchronization, next launch)")
+        lines.append(f"Antialias: {controls['antialias']} (OpenGL, next launch)")
+        lines.append(f"Texture art: {controls['texture_set']} (first-level pilot, OpenGL, next launch)")
         lines.append(f"Mesh geometry: {controls['geometry_precision']}; textures: {controls['texture_precision']} (OpenGL; next launch)")
         lines.append(f"Frame rate: {describe_frame_rate(controls['frame_rate'])}")
         lines.append(f"World renderer: {describe_world_renderer(controls['world_renderer'])}")

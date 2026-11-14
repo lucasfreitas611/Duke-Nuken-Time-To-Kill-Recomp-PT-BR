@@ -11,6 +11,9 @@ struct NearGte {
 // GTE-exact RTPS for one vertex: packed SXY, SZ and the unclamped view position.
 struct NearProjected { uint32_t sxy; int32_t x16,y16; uint16_t sz; double view[3]; bool safe; };
 NearProjected near_project(const NearGte& g,int16_t vx,int16_t vy,int16_t vz);
+// Exact host-only decal projection follows Corrected geometry. An explicit
+// DNTTK_DECAL_EXACT=0/1 remains available for isolated A/B comparisons.
+bool near_exact_decal_screen();
 // View-space plane for depth evaluation at the actual raster position.
 struct NearDepthPlane { double n[3], d; };
 NearDepthPlane near_depth_plane(const double a[3],const double b[3],const double c[3]);
@@ -33,6 +36,11 @@ void near_clip_flip();
 // Reserve draw-time scratch before replay workers fork.
 void near_clip_prepare();
 NearClipFrameState near_clip_frame_state();
+// Guest addresses cached by draw-time host code; independent helper processes
+// import these bindings rather than assuming identical allocation order.
+struct NearClipWorkerState {uint32_t arena,mirror,mask,copy,rect,missing,after_walk;};
+NearClipWorkerState near_clip_worker_state();
+void near_clip_load_worker_state(const NearClipWorkerState& s);
 void near_clip_load_frame_state(const NearClipFrameState& s);
 // Diagnostic counters (world taken, world triangles, object taken, object
 // triangles, mesh fallbacks, budget hits, copy overflows, refused).
