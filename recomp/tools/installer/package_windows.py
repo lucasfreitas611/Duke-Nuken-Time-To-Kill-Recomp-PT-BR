@@ -149,7 +149,7 @@ def main():
     bundle_dlls(tools, kit)
     if args.embed_toolchain:
         shutil.copytree(kit, stage / 'toolchain', symlinks=False,
-                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.psxrecomp-bin'))
     if args.wheelhouse:
         wheels = list(args.wheelhouse.resolve().glob('*.whl'))
         if not wheels:
