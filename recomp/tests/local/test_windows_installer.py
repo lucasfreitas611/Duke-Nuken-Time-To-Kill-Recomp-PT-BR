@@ -127,12 +127,33 @@ class InstallerGuards(unittest.TestCase):
     def test_invalid_replacement_disc_leaves_current_install_ready(self):
         ready = self.root / 'ready.json'
         ready.write_text('existing preparation')
+        invalid = self.root / 'invalid.bin'
+        invalid.touch()
         with patch.dict(sys.modules, {'disc_lab': unittest.mock.Mock()}):
             disc_lab = sys.modules['disc_lab']
             disc_lab.import_disc.side_effect = ValueError('disco incompatível')
-            with self.assertRaisesRegex(ValueError, 'disco incompatível'):
-                setup.prepare(self.app, self.root / 'kit', self.root, self.root / 'invalid.bin', 2)
+            with self.assertRaisesRegex(setup.DiscSelectionError, 'disco é incompatível'):
+                setup.prepare(self.app, self.root / 'kit', self.root, invalid, 2)
         self.assertEqual(ready.read_text(), 'existing preparation')
+
+    def test_prepare_requires_a_selected_or_previously_imported_disc(self):
+        with self.assertRaisesRegex(setup.DiscSelectionError, 'Selecione'):
+            setup.prepare(self.app, self.root / 'kit', self.root, None, 2)
+        self.assertFalse((self.root / 'project/recomp/disc').exists())
+        self.assertFalse((self.root / 'ready.json').exists())
+
+    def test_compiler_status_reports_completed_tasks(self):
+        status = self.root / 'status.txt'
+        output = (
+            'print("[1/2] Re-checking globbed directories...")\n'
+            'print("[0/3] Configuring")\n'
+            'print("[2/3] Building a game object")\n'
+            'print("[4/3] Not a valid task count")\n'
+        )
+        setup.run([sys.executable, '-c', output], self.root, os.environ, status_file=status)
+        header, description = status.read_text(encoding='utf-8').split('\n', 1)
+        self.assertEqual(header, '2 3')
+        self.assertIn('Recompilando o jogo', description)
 
     def launch(self, changed_sdk=False):
         self.manifest([self.entry('src/test.c')])
@@ -147,18 +168,31 @@ class InstallerGuards(unittest.TestCase):
     def test_first_launch_defaults_and_user_preferences_on_later_launch(self):
         result, run = self.launch()
         self.assertEqual(result, 0)
-        command = list(map(str, run.call_args.args[0]))
-        self.assertEqual(command[command.index('--internal-scale') + 1], '2')
-        self.assertEqual(command[command.index('--frame-rate') + 1], 'auto')
+        defaults, command = [list(map(str, call.args[0])) for call in run.call_args_list]
+        self.assertIn('--show-settings', defaults)
+        for flag, value in (('--internal-scale', '2'), ('--frame-rate', 'auto'),
+                            ('--display', 'borderless'), ('--window-width', '1920'),
+                            ('--antialias', 'smooth')):
+            self.assertEqual(defaults[defaults.index(flag) + 1], value)
+            self.assertNotIn(flag, command)
         self.assertEqual(command[command.index('--memcard-dir') + 1], str(self.root / 'saves'))
         config = self.root / 'config/player-profiles.json'
-        config.parent.mkdir()
         config.write_text('user preference sentinel')
         result, run = self.launch()
         self.assertEqual(result, 0)
         self.assertNotIn('--internal-scale', run.call_args.args[0])
         self.assertNotIn('--frame-rate', run.call_args.args[0])
         self.assertEqual(config.read_text(), 'user preference sentinel')
+
+    def test_existing_install_keeps_texture_choice_when_adopting_full_hd_defaults(self):
+        config = self.root / 'config/player-profiles.json'
+        config.parent.mkdir()
+        config.write_text('existing texture preference')
+        result, run = self.launch()
+        self.assertEqual(result, 0)
+        defaults = run.call_args_list[0].args[0]
+        self.assertIn('--antialias', defaults)
+        self.assertNotIn('--texture-set', defaults)
 
     def test_updated_sdk_refuses_to_launch_old_preparation(self):
         result, run = self.launch(changed_sdk=True)

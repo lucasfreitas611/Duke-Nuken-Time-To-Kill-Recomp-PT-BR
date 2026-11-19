@@ -558,7 +558,7 @@ def describe(settings):
         lines.append(f"Swimming view: {controls['swim_view']} (when global view is first person)")
         lines.append(f"VSync: {controls['vsync']} (display synchronization, next launch)")
         lines.append(f"Antialias: {controls['antialias']} (OpenGL, next launch)")
-        lines.append(f"Texture art: {controls['texture_set']} (first-level pilot, OpenGL, next launch)")
+        lines.append(f"Texture art: {controls['texture_set']} (campaign replacements require OpenGL)")
         lines.append(f"Mesh geometry: {controls['geometry_precision']}; textures: {controls['texture_precision']} (OpenGL; next launch)")
         lines.append(f"Frame rate: {describe_frame_rate(controls['frame_rate'])}")
         lines.append(f"World renderer: {describe_world_renderer(controls['world_renderer'])}")

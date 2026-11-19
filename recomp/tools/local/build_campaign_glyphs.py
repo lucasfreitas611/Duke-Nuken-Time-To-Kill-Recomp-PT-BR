@@ -39,8 +39,8 @@ def glyphs(master_path=OUT/'glyphs-master.png'):
                 yield ALPHABET[row*6+col], image.crop(bounds)
 
 
-def pack():
-    art = dict(glyphs())
+def pack(master=OUT/'glyphs-master.png'):
+    art = dict(glyphs(master))
     original = (RECOMP/'build-local/ttk-fonts.pack').read_bytes()
     if original[:8] != b'TTKFONT2':
         raise ValueError('invalid base font pack')
@@ -81,5 +81,11 @@ def weapon_icons():
 
 
 if __name__ == '__main__':
-    pack()
-    weapon_icons()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--master', type=Path, default=OUT/'glyphs-master.png')
+    parser.add_argument('--font-only', action='store_true')
+    options = parser.parse_args()
+    pack(options.master)
+    if not options.font_only:
+        weapon_icons()

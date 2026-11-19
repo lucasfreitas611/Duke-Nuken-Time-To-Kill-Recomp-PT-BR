@@ -87,6 +87,12 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <filesystem>
+#endif
 
 extern "C" int g_psx_call_bail, g_precise_mode, g_ls_mode;
 
@@ -378,6 +384,8 @@ std::vector<Screen> make_screens() {
           {"165","165","\"165\""},{"180","180","\"180\""},{"240","240","\"240\""},{"UNLIMITED","unlimited","\"unlimited\""}},0},
         {"VSYNC",Section::Controls,"vsync","DNTTK_VSYNC",false,"SYNC TO DISPLAY. REDUCES TEARING, NEXT LAUNCH",
          {{"ON","on","\"on\""},{"OFF","off","\"off\""}},0},
+        {"TEXTURE ART",Section::Controls,"texture_set","DNTTK_TEXTURE_SET",true,"ORIGINAL OR HD CAMPAIGN TEXTURES. OPENGL",
+         {{"ORIGINAL","original","\"original\""},{"REMASTERED","realistic","\"realistic\""}},0},
         // D17AR6: the world renderer (run.py maps it to the D17AM/D17AR switches).
         {"RENDERER",Section::Controls,"world_renderer","DNTTK_WORLD_RENDERER",false,"POLYMORPH: OUR RENDERER. CLASSIC: THE ORIGINAL DRAWING",
          {{"POLYMORPH","polymorph","\"polymorph\""},{"CLASSIC","classic","\"classic\""}},0},
@@ -457,8 +465,6 @@ std::vector<Screen> make_screens() {
          {{"ORIGINAL","original","\"original\""},{"CORRECTED","corrected","\"corrected\""}},0},
         {"TEXTURES",Section::Controls,"texture_precision","DNTTK_TEXTURE_PRECISION",false,"CORRECTED: NO TEXTURE WARP",
          {{"ORIGINAL","original","\"original\""},{"CORRECTED","corrected","\"corrected\""}},0},
-        {"TEXTURE ART",Section::Controls,"texture_set","DNTTK_TEXTURE_SET",false,"FIRST LEVEL PILOT. OPENGL, NEXT LAUNCH",
-         {{"ORIGINAL","original","\"original\""},{"REALISTIC FULL","realistic","\"realistic\""}},0},
         {"ANTIALIASING",Section::Controls,"antialias","DNTTK_ANTIALIAS",false,"SMOOTH: EDGES AND DISTANT TEXTURES. NEXT LAUNCH",
          {{"OFF","off","\"off\""},{"SMOOTH","smooth","\"smooth\""}},0},
         heading("PERFORMANCE"),
@@ -759,11 +765,29 @@ void write_settings() {
         bindings+=std::string(a?",":"")+"\""+action_names[a]+"\":\""+token_of(input_binding_code(Action(a)))+"\"";
     const std::string text="{\"version\":1,\"active\":\"modernized\",\"controls\":{"+controls+"},\"presentation\":{"+presentation+"},\"bindings\":{"+bindings+"}}\n";
     const std::string temp=std::string(path)+".tmp";
-    if(FILE* f=std::fopen(temp.c_str(),"wb")) {
+#ifdef _WIN32
+    const auto target_w=std::filesystem::u8path(path);
+    const auto temp_w=std::filesystem::u8path(temp);
+    FILE* f=_wfopen(temp_w.c_str(),L"wb");
+#else
+    FILE* f=std::fopen(temp.c_str(),"wb");
+#endif
+    if(f) {
         const bool ok=std::fwrite(text.data(),1,text.size(),f)==text.size();
-        if(std::fclose(f)==0 && ok && std::rename(temp.c_str(),path)==0) {++writes;return;}
+        if(std::fclose(f)==0 && ok) {
+#ifdef _WIN32
+            const bool replaced=MoveFileExW(temp_w.c_str(),target_w.c_str(),MOVEFILE_REPLACE_EXISTING)!=0;
+#else
+            const bool replaced=std::rename(temp.c_str(),path)==0;
+#endif
+            if(replaced) {++writes;return;}
+        }
     }
+#ifdef _WIN32
+    DeleteFileW(temp_w.c_str());
+#else
     std::remove(temp.c_str());
+#endif
     std::fprintf(stderr,"[TTK menu] could not write %s\n",path);
 }
 
@@ -1439,6 +1463,9 @@ bool game_menu_controller(unsigned seat,uint16_t buttons) {
 }
 
 uint64_t drops=0; int drop_why=0; uint16_t drop_state=0, drop_sub=0;   // diagnostic
+namespace {
+bool menu_pointer(const MenuKeys& keys,uint16_t mode);
+}
 bool game_menu_input(const MenuKeys& keys) {
     if(!enabled()) return false;
     std::lock_guard<std::recursive_mutex> lock(mutex);
@@ -1488,6 +1515,7 @@ bool game_menu_input(const MenuKeys& keys) {
     }
     // D19G: waiting for a new key, only that key counts.
     if(key_wait) {
+        if(k.pointer_back) {key_wait_end();return true;}
         if(page!=Page::Keys) key_wait_end();
         else {
             const int code=input_take_captured_key();
@@ -1495,6 +1523,7 @@ bool game_menu_input(const MenuKeys& keys) {
             return true;
         }
     }
+    if(menu_pointer(k,stats ? 2 : c->mode)) return true;
     const uint64_t now=SDL_GetTicks();
     for(int n=repeat(rep_up,k.up,k.up_taps,now);n>0;--n) move(-1);
     for(int n=repeat(rep_down,k.down,k.down_taps,now);n>0;--n) move(1);
@@ -1515,6 +1544,15 @@ bool game_menu_input(const MenuKeys& keys) {
 
 namespace {
 // ---- drawing: the original's own calls, on one saved stack and scratchpad ----
+enum class HitAction {Row,Confirm,Back,Default,Change};
+struct MenuHit {int left,top,right,bottom,row;HitAction action;};
+std::vector<MenuHit> pointer_hits;
+Page pointer_page;
+int pointer_screen=-1,pointer_top=-1;
+bool collecting_hits=false;
+void menu_hit(int left,int y,int right,int height,int row,HitAction action=HitAction::Row) {
+    if(collecting_hits) pointer_hits.push_back({left,y-2,right,y+height-2,row,action});
+}
 thread_local bool localized_call=false;
 struct Guest {
     CPUState* source;uint32_t top,text,base;bool ok=true;
@@ -1688,6 +1726,11 @@ struct Guest {
     // centred small-font label.
     void prompt(Icon icon,const char* label,int x,int y) {
         const int w=width(label,font_small);
+        if(icon==icon_cross || icon==icon_triangle || icon==icon_square || icon==icon_change) {
+            const auto action=icon==icon_cross ? HitAction::Confirm : icon==icon_triangle ? HitAction::Back :
+                icon==icon_square ? HitAction::Default : HitAction::Change;
+            menu_hit(x-w/2-27,y,x+w/2+5,16,-1,action);
+        }
         call(fn_sprite,sprites+16*icon,(uint32_t)(x-w/2-26),(uint32_t)(y-3),0,100);
         say(label,x,y,font_small|centre);
     }
@@ -1714,6 +1757,54 @@ Geometry read_geometry() {
     return {(int16_t)psx_mod_read_half(geometry),(int16_t)psx_mod_read_half(geometry+2),
             (int16_t)psx_mod_read_half(geometry+4),(int16_t)psx_mod_read_half(geometry+6)};
 }
+extern "C" int gl_renderer_menu_point(float*,float*);
+bool menu_pointer(const MenuKeys& keys,uint16_t mode) {
+    if(!keys.pointer_moved && !keys.pointer_confirm && !keys.pointer_back) return false;
+    if(keys.pointer_back) {back(mode);title_activity=true;return true;}
+    if(pointer_page!=page || pointer_screen!=screen || pointer_top!=top) return false;
+    auto x=keys.pointer_x,y=keys.pointer_y;
+    if(!gl_renderer_menu_point(&x,&y)) {
+        const float aspect=keys.pointer_aspect*0.75f;
+        x=(x-0.5f)*std::max(aspect,1.0f)+0.5f;
+        y=(y-0.5f)*std::max(1.0f/aspect,1.0f)+0.5f;
+    }
+    if(x<0 || x>=1 || y<0 || y>=1) return false;
+    const Geometry geo=read_geometry();
+    x=geo.x0+x*geo.w;y=geo.y0+y*geo.h;
+    for(auto it=pointer_hits.rbegin();it!=pointer_hits.rend();++it) {
+        const auto& hit=*it;
+        if(x<hit.left || x>=hit.right || y<hit.top || y>=hit.bottom) continue;
+        if(hit.action!=HitAction::Row) {
+            if(!keys.pointer_confirm) return false;
+            if(hit.action==HitAction::Confirm) confirm();
+            else if(hit.action==HitAction::Back) back(mode);
+            else if(hit.action==HitAction::Default) defaults();
+            else change(x<(hit.left+hit.right)/2 ? -1 : 1,0);
+            title_activity=true;
+            return true;
+        }
+        const int row=hit.row;
+        if(page==Page::SaveAsk) save_choice=row;
+        else if(page==Page::DeleteAsk) delete_choice=row;
+        else if(page==Page::Difficulty) psx_mod_write_half(diff_cursor,(uint16_t)row);
+        else if(page==Page::TwoPlayer) psx_mod_write_half(two_cursor,(uint16_t)row);
+        else if(page!=Page::Character) cursor=row;
+        title_activity=true;
+        if(!keys.pointer_confirm) return false;
+        if(page==Page::Options && screen>=0 && !screens[screen].rows[cursor].link)
+            change(x<0 ? -1 : 1,0);
+        else if(page==Page::TwoPlayer || page==Page::Character)
+            change(x<0 ? -1 : 1,0);
+        else confirm();
+        return true;
+    }
+    return false;
+}
+void start_pointer_hits() {
+    pointer_hits.clear();
+    pointer_page=page;pointer_screen=screen;pointer_top=top;
+    collecting_hits=true;
+}
 // Prompt row at the original's y. OPTIONS: its three, w/4 apart. Settings:
 // GAME SETTINGS' four (SELECT -3w/8, CHANGE 5 - w/8, CONFIRM w/8 - 5, CANCEL
 // 3w/8), and DEFAULT on the heading line in the CANCEL column.
@@ -1735,8 +1826,10 @@ void prompts(Guest& g,const Geometry& geo,bool settings) {
 void draw_options(Guest& g,const Geometry& geo) {
     // The handler's 19-line spacing, centred where its three were.
     const int y=(geo.h-57)/2+geo.y0-19*(option_count-3)/2;
-    for(int i=0;i<option_count;++i)
+    for(int i=0;i<option_count;++i) {
+        menu_hit(geo.x0/2,y+19*i,-geo.x0/2,19,i);
         g.say(options_items[i].label,0,y+19*i,font_menu|centre|(i==cursor?blue:0));
+    }
     prompts(g,geo,false);
 }
 void wrap(Guest& g,const char* text,int max,std::vector<std::string>& lines) {
@@ -1772,6 +1865,7 @@ const char* needs(const Row& r) {
     if(k=="crosshair" && is("red_dot","1")) return "RED DOT ON HIDES THE MODERN CROSSHAIR";
     if(k=="crosshair" && is("weapon_aim","original")) return "NEEDS WEAPON AIM VIEW, IN ADVANCED";
     if((k=="internal_scale" || k=="geometry_precision" || k=="texture_precision" || k=="texture_set" || k=="antialias") && is("renderer","software")) return "NEEDS BACKEND OPENGL, IN ADVANCED";
+    if(k=="texture_set" && !std::getenv("DNTTK_TEXTURE_PACK")) return "HD CAMPAIGN ART IS NOT INSTALLED";
     return nullptr;
 }
 void draw_settings(Guest& g,const Geometry& geo) {
@@ -1792,6 +1886,7 @@ void draw_settings(Guest& g,const Geometry& geo) {
         const Row& r=s.rows[i];
         const uint32_t hi=i==cursor?blue:0;
         if(r.heading) {g.say_clut(r.label,0,y,font_small|centre,clut_amber);continue;}
+        menu_hit(geo.x0+16,y-(view_slider(r)?14:0),geo.x0+geo.w-16,spacing*row_units(s,i),i);
         if(needs(r) && !r.slider) {
             // D19N: a row with no effect now: dimmed (its label blue under the cursor).
             const std::string label=std::string(r.label)+":";
@@ -1858,6 +1953,7 @@ void draw_keys(Guest& g,const Geometry& geo) {
         const int i=top+j, y=y0+j*spacing;
         const KeyRow& k=key_rows[i];
         if(k.action<0) {g.say_clut(k.label,0,y,font_small|centre,clut_amber);continue;}
+        menu_hit(geo.x0+16,y,geo.x0+geo.w-16,spacing,i);
         g.say((std::string(k.label)+":").c_str(),-10,y,font_small|right|(i==cursor?blue:0));
         if(i==cursor && key_wait) g.say("PRESS A KEY",10,y,font_small|blue);
         else {
@@ -1895,7 +1991,10 @@ int heading_y(const Geometry& geo) {return geo.y0+(171*geo.h>>11);}
 // (the original's own arithmetic), plus a shift.
 void draw_list(Guest& g,const Geometry& geo,int shift) {
     const int n=(int)list.size(), y=(geo.h-57)/2+geo.y0-19*(n-3)/2+shift;
-    for(int i=0;i<n;++i) g.say(list[i].label,0,y+19*i,font_menu|centre|(i==cursor?blue:0));
+    for(int i=0;i<n;++i) {
+        menu_hit(3*geo.x0/4,y+19*i,-3*geo.x0/4,19,i);
+        g.say(list[i].label,0,y+19*i,font_menu|centre|(i==cursor?blue:0));
+    }
 }
 void level_title(Guest& g,const Geometry& geo) {
     const int n=level();
@@ -1942,6 +2041,8 @@ void draw_ask(Guest& g,const Geometry& geo) {
     else g.say_id(heading,0,-40,font_menu|centre);
     g.say_id(text_yes,0,-6,font_menu|centre|(cursor==0?blue:0));
     g.say_id(text_no,0,13,font_menu|centre|(cursor==1?blue:0));
+    menu_hit(geo.x0/3,-6,-geo.x0/3,19,0);
+    menu_hit(geo.x0/3,13,-geo.x0/3,19,1);
     const int y=prompt_y(geo);
     g.prompt(icon_select,"SELECT",-geo.w/4,y);
     g.prompt(icon_cross,"CONFIRM",0,y);
@@ -1958,6 +2059,7 @@ void draw_main(Guest& g,const Geometry& geo) {
     if(show_headings()) {g.say_id(text_title1,0,hy,font_menu|centre);g.say_id(text_title2,0,hy+19,font_menu|centre);}
     for(int i=0;i<(int)list.size();++i) {
         const int y=-30+15*i;
+        menu_hit(3*geo.x0/4,y,-3*geo.x0/4,15,i);
         const uint32_t f=font_small|centre|(i==cursor?blue:0);
         switch(list[i].act) {
         case Act::OnePlayer: g.say_id(text_one,0,y,f);break;
@@ -1985,7 +2087,10 @@ void draw_difficulty(Guest& g,const Geometry& geo) {
     g.prompt_id(icon_triangle,geo.w/4,y,text_return);
     if(show_headings()) g.say_id(text_difficulty,0,-76,font_menu|centre);
     const int cur=half(diff_cursor);
-    for(int i=0;i<4;++i) g.say_id((int)psx_mod_read_word(diff_ids+4*i),0,19*i-47,font_menu|centre|(i==cur?blue:0));
+    for(int i=0;i<4;++i) {
+        menu_hit(geo.x0/2,19*i-47,-geo.x0/2,19,i);
+        g.say_id((int)psx_mod_read_word(diff_ids+4*i),0,19*i-47,font_menu|centre|(i==cur?blue:0));
+    }
 }
 // 0x8008484c: four prompts w/8 apart, the heading, then LEVEL (menu font) and
 // TIME, KILLS and SPLIT (font 0), labels right-aligned at 0, values from 0.
@@ -1998,6 +2103,8 @@ void draw_two(Guest& g,const Geometry& geo) {
     if(show_headings()) g.say_id(text_two_heading,0,heading_y(geo),font_menu|centre);
     const int cur=half(two_cursor);
     int row=geo.y0+(geo.h-76)/2;
+    menu_hit(geo.x0/2,row,-geo.x0/2,19,0);
+    for(int i=1;i<4;++i) menu_hit(geo.x0/2,row+38+15*(i-1),-geo.x0/2,15,i);
     g.say_id(text_level,0,row,font_menu|right|(cur==0?blue:0));
     g.say_id(half(two_levels+2*std::clamp<int>(half(two_level),0,5)),0,row,font_menu);
     row+=38;
@@ -2026,6 +2133,7 @@ void draw_character(Guest& g,const Geometry& geo) {
     const uint32_t locks=psx_mod_read_word(char_locks);
     int row=geo.y0+(geo.h-76)/2;
     for(uint32_t p=0;p<2;++p,row+=38) {
+        if(p==0) menu_hit(geo.x0/2,row,-geo.x0/2,19,0);
         g.say_id(p ? text_player2 : text_player1,0,row,font_menu|right);
         const uint32_t sel=psx_mod_read_word(char_choice+4*p);
         g.say_id((int)psx_mod_read_word(char_ids+4*(sel<6 ? sel : 0)),0,row,font_menu|(locks&(1u<<p) ? 0 : blue));
@@ -2168,6 +2276,7 @@ void draw_load(Guest& g,const Geometry& geo,bool save=false) {
     const int x=-geo.w/2+36, y0=-66, spacing=14;
     for(int j=0;j<load_rows_visible && top+j<SAVESTATE_SLOTS;++j) {
         const int i=top+j, y=y0+spacing*j;
+        menu_hit(x-12,y,0,spacing,i);
         char number[16];std::snprintf(number,sizeof number,"%02d",i+1);
         const std::string name=slot_name(i);
         if(i==cursor || loadable(i) || save) {
@@ -2217,6 +2326,8 @@ void draw_save_ask(Guest& g,const Geometry& geo) {
     g.say("OVERWRITE THIS SAVE?",0,ty+th+32,font_menu|centre);
     g.say_id(text_yes,0,ty+th+54,font_menu|centre|(save_choice==0?blue:0));
     g.say_id(text_no,0,ty+th+72,font_menu|centre|(save_choice==1?blue:0));
+    menu_hit(geo.x0/3,ty+th+54,-geo.x0/3,18,0);
+    menu_hit(geo.x0/3,ty+th+72,-geo.x0/3,18,1);
     const int py=prompt_y(geo);
     g.prompt(icon_select,"SELECT",-geo.w/4,py);
     g.prompt(icon_cross,"CONFIRM",0,py);
@@ -2238,6 +2349,8 @@ void draw_delete_ask(Guest& g,const Geometry& geo) {
     overlay_commit();
     g.say_id(text_yes,0,ty+th+54,font_menu|centre|(delete_choice==0?blue:0));
     g.say_id(text_no,0,ty+th+72,font_menu|centre|(delete_choice==1?blue:0));
+    menu_hit(geo.x0/3,ty+th+54,-geo.x0/3,18,0);
+    menu_hit(geo.x0/3,ty+th+72,-geo.x0/3,18,1);
     const int py=prompt_y(geo);
     g.prompt(icon_select,"SELECT",-geo.w/4,py);
     g.prompt(icon_cross,"CONFIRM",0,py);
@@ -2345,6 +2458,7 @@ void draw_stats(Guest& g,const Geometry& geo) {
     }
     if(stats_wait>0) return;
     const int ly=row+stats_list_y, items=stats_items();
+    for(int i=0;i<items;++i) menu_hit(geo.x0/2,ly+19*i,-geo.x0/2,19,i);
     g.say("CONTINUE",0,ly,font_menu|centre|(cursor==0 || items<2 ? blue : 0));
     if(items>1) g.say("SAVE GAME",0,ly+19,font_menu|centre|(cursor==1 ? blue : 0));
     const int py=prompt_y(geo);
@@ -2819,6 +2933,7 @@ void draw_page(CPUState* cpu,const MenuContext* c) {
     {
         Guest g(cpu);
         const Geometry geo=read_geometry();
+        start_pointer_hits();
         switch(page) {
         case Page::Pause: draw_pause(g,geo);break;
         case Page::Death: draw_death(g,geo);break;
@@ -2835,7 +2950,9 @@ void draw_page(CPUState* cpu,const MenuContext* c) {
         case Page::Save: draw_load(g,geo,true);break;
         case Page::SaveAsk: draw_save_ask(g,geo);break;
         case Page::DeleteAsk: draw_delete_ask(g,geo);break;
+        case Page::Stats: break;
         }
+        collecting_hits=false;
         // Diagnostics only (DNTTK_TEST_MENU_TEXT=<text>): the text in both
         // menu fonts at the top of every page (D19T glyph checks).
         static const char* test_text=std::getenv("DNTTK_TEST_MENU_TEXT");
@@ -2946,12 +3063,14 @@ void stats_flip(CPUState* cpu) {
         Guest g(cpu);
         if(pending_sound>=0) {g.call(fn_sound,(uint32_t)pending_sound,0,0,0);pending_sound=-1;}
         const Geometry geo=read_geometry();
+        start_pointer_hits();
         switch(page) {
         case Page::Save: draw_load(g,geo,true);break;
         case Page::SaveAsk: draw_save_ask(g,geo);break;
         case Page::DeleteAsk: draw_delete_ask(g,geo);break;
         default: thumb_hide();draw_stats(g,geo);break;
         }
+        collecting_hits=false;
         if(stats_continue) {
             // The original's Cross: its sound, then -1, and the run handler
             // leaves the mode after this flip (this image still shows the page).

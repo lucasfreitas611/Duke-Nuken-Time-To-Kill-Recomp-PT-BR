@@ -7,15 +7,28 @@ import struct
 import numpy as np
 from PIL import Image
 from build_campaign_inventory_icons import OUT
-from build_ttk_fonts import Sheet
+from build_ttk_fonts import FONTS_PATH, FONTS_SHA256, Sheet
+from disc_lab import Disc
 from texture_sample import build, decode
-from ttk_anim import read_exe
+from ttk_anim import DISC_PATH, read_exe
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('vram', type=Path, help='stable HUD page captured with check_graphics_route')
-    sheet = Sheet(parser.parse_args().vram.read_bytes())
+    parser.add_argument('vram', nargs='?', type=Path, help='stable HUD page captured with check_graphics_route')
+    args = parser.parse_args()
+    if args.vram:
+        raw = args.vram.read_bytes()
+    else:
+        disc = Disc(DISC_PATH)
+        try:
+            entry = next(e for e in disc.files() if e['path'] == FONTS_PATH)
+            raw = disc.read(entry['lba'], entry['size'])
+        finally:
+            disc.close()
+        if hashlib.sha256(raw).hexdigest() != FONTS_SHA256:
+            raise ValueError('unexpected USA HUD texture')
+    sheet = Sheet(raw)
     if len(sheet.raw) != 64*256*2:
         raise ValueError('expected the 64-word HUD page at VRAM (960,0)')
     exe = read_exe()

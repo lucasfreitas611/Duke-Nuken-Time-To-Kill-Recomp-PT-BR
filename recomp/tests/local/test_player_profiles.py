@@ -609,7 +609,11 @@ class ProfilesTest(unittest.TestCase):
             run.main(base+['--renderer','opengl'])
             self.assertEqual(launch.call_args.kwargs['env']['DNTTK_TEXTURE_SET'],'realistic')
             run.main(base+['--texture-set','original'])
-            self.assertNotIn('DNTTK_TEXTURE_PACK',launch.call_args.kwargs['env'])
+            env=launch.call_args.kwargs['env']
+            self.assertEqual(env['DNTTK_TEXTURE_SET'],'original')
+            # The Video menu can activate the installed pack during this session.
+            self.assertTrue(env['DNTTK_TEXTURE_PACK'].endswith('pack.ttkpack'))
+            self.assertTrue(env['DNTTK_CAMPAIGN_ART'].endswith('installed-art'))
         legacy=dict(profiles.DEFAULT_CONTROLS)
         legacy.pop('texture_set')
         legacy.pop('antialias')

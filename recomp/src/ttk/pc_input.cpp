@@ -55,6 +55,8 @@ static uint64_t jump_deadline,menu_select_deadline,jump_pressed_at;
 static bool escape_hold;
 // D19D: uncaptured mouse-wheel notches waiting to move a menu cursor.
 static std::atomic<int> menu_wheel{0};
+static bool menu_motion,menu_click,menu_back_click;
+static float menu_x,menu_y;
 // D19H: menu key-down events (up, down, left, right, confirm, back, square,
 // D19S delete) since the menu last read them; taken (and dropped when no menu
 // screen owns the keys) on every pad read.
@@ -645,6 +647,12 @@ void input_event(const SDL_Event& e) {
     } else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
         if (e.button.windowID != SDL_GetWindowID(window)) return;
         if(e.type==SDL_MOUSEBUTTONDOWN)cheat_typing.reset();
+        if(!captured && e.type==SDL_MOUSEBUTTONDOWN &&
+           (e.button.button==SDL_BUTTON_LEFT || e.button.button==SDL_BUTTON_RIGHT)) {
+            menu_x=(float)e.button.x;menu_y=(float)e.button.y;
+            menu_click=e.button.button==SDL_BUTTON_LEFT;
+            menu_back_click=!menu_click;
+        }
         if(e.type==SDL_MOUSEBUTTONDOWN && e.button.button<6 && quick_press(-int(e.button.button),(int)SDL_GetModState())) return;
         // Classic split-screen has no mouse-look capture, but its keyboard
         // seat still owns bound mouse buttons. Do not run campaign commands.
@@ -707,7 +715,12 @@ void input_event(const SDL_Event& e) {
             int steps=std::clamp(int(wheel_fraction),-32,32);wheel_fraction-=steps;
             for(int i=0;i<std::abs(steps);++i)command(steps>0?weapon_next:weapon_previous);
         }
-    } else if (e.type == SDL_MOUSEMOTION && captured && e.motion.windowID == SDL_GetWindowID(window)) {
+    } else if (e.type == SDL_MOUSEMOTION && e.motion.windowID == SDL_GetWindowID(window)) {
+        if(!captured) {
+            if(!menu_click && !menu_back_click) {menu_x=(float)e.motion.x;menu_y=(float)e.motion.y;}
+            menu_motion=true;
+            return;
+        }
         dx = std::clamp(dx + (float)e.motion.xrel, -32768.f, 32768.f);
         look_cx+=e.motion.xrel; look_cy+=e.motion.yrel;
         look_ring[look_n++%512]={event_ms(e),look_cx,look_cy};
@@ -1330,6 +1343,9 @@ static bool quick_press(int code,int mods) {
 }
 static bool (*menu_handler)(const MenuKeys&);
 static bool menu_had_keys;
+static uint16_t mouse_menu_button;
+static uint64_t mouse_menu_until;
+static MenuScreen mouse_menu_screen;
 void input_set_menu_handler(bool (*handler)(const MenuKeys&)) {menu_handler=handler;}
 static bool menu_owns_keys() {
     if(!menu_handler)return false;
@@ -1340,11 +1356,21 @@ static bool menu_owns_keys() {
     k.back=keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_BACKSPACE] || keys[SDL_SCANCODE_Z];
     k.square=keys[SDL_SCANCODE_V];
     k.wheel=captured?0:menu_wheel.load();
+    if(!captured && (menu_motion || menu_click || menu_back_click)) {
+        int w=0,h=0;
+        if(window)SDL_GetWindowSize(window,&w,&h);
+        if(w>0 && h>0) {
+            k.pointer_x=menu_x/w;k.pointer_y=menu_y/h;k.pointer_aspect=(float)w/h;
+            k.pointer_moved=menu_motion;k.pointer_confirm=menu_click;k.pointer_back=menu_back_click;
+        }
+    }
+    menu_motion=menu_click=menu_back_click=false;
     int* const taps[8]={&k.up_taps,&k.down_taps,&k.left_taps,&k.right_taps,&k.confirm_taps,&k.back_taps,&k.square_taps,&k.delete_taps};
     for(int i=0;i<8;++i)*taps[i]=captured?0:menu_downs[i].exchange(0);
     if(captured)for(auto& d:menu_downs)d.store(0);
     const bool owns=!captured && menu_handler(k);
     if(owns) {
+        mouse_menu_button=0;
         // Covers restored pause lists too, which bypass their entry hook.
         escape_hold=false;capture_offer=false;
         if(k.wheel)menu_wheel.fetch_sub(k.wheel);
@@ -1356,6 +1382,11 @@ static bool menu_owns_keys() {
         for(int code:{SDL_SCANCODE_UP,SDL_SCANCODE_DOWN,SDL_SCANCODE_LEFT,SDL_SCANCODE_RIGHT,SDL_SCANCODE_RETURN,
                       SDL_SCANCODE_X,SDL_SCANCODE_ESCAPE,SDL_SCANCODE_BACKSPACE,SDL_SCANCODE_Z,SDL_SCANCODE_V})keys[code]=false;
         escape_start_deadline=0;
+    }
+    if(!owns && (k.pointer_confirm || k.pointer_back) && menu_screen()!=MenuScreen::None) {
+        mouse_menu_screen=menu_screen();
+        mouse_menu_button=menu_key_button(k.pointer_confirm?MenuKey::Confirm:MenuKey::Back);
+        mouse_menu_until=sequence+12;
     }
     menu_had_keys=owns;
     return owns;
@@ -1369,6 +1400,11 @@ uint16_t input_pad() {
     uint16_t value = 0xffff;
     if (!modern || !focused) return value;
     if(menu_owns_keys())return value;
+    if(mouse_menu_button) {
+        if(!captured && sequence<mouse_menu_until && menu_screen()==mouse_menu_screen)
+            value &= ~mouse_menu_button;
+        else mouse_menu_button=0;
+    }
     if(modern && focused && menu_select_deadline && sequence<=menu_select_deadline)value &= ~1u;
     // D19D: Escape (its Start pulse included), Backspace and Enter as menu keys.
     value &= ~latched(latch_escape,keys[SDL_SCANCODE_ESCAPE] || (escape_start_deadline && sequence<=escape_start_deadline),MenuKey::Back);

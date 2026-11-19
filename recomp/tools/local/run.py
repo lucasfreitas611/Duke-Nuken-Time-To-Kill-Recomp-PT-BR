@@ -263,24 +263,29 @@ def main(argv=None):
             env['DNTTK_HUD_TEXTURE_PACK'] = str(pack)
         elif a.menu_hd and not a.hud_hd:
             print('HD menu font pack missing; original menu font retained.', file=sys.stderr)
-    if precision_supported and controls['texture_set'] == 'realistic':
+    installed_art = ROOT / 'analysis/installed-art'
+    if precision_supported and not a.campaign_art_preview and (installed_art/'00/pack.ttkpack').is_file():
+        env['DNTTK_TEXTURE_PACK'] = str(installed_art/'00/pack.ttkpack')
+        env['DNTTK_CAMPAIGN_ART'] = str(installed_art)
+    elif precision_supported:
         pack = ROOT / 'analysis/level00-realistic-complete/pack.ttkpack'
         if pack.is_file():
             env['DNTTK_TEXTURE_PACK'] = str(pack.resolve())
-        else:
+        elif controls['texture_set'] == 'realistic':
             print('Realistic texture pack missing; original artwork retained.', file=sys.stderr)
         if a.campaign_art_preview:
             campaign = ROOT / 'analysis/campaign-art'
             env['DNTTK_CAMPAIGN_ART'] = str(campaign / 'packs')
-            icons = campaign / 'ui/ttk-inv-icons.pack'
-            if icons.is_file():
-                env['DNTTK_INV_ICONS'] = str(icons)
-            mission = campaign / 'ui/ttk-mission-items.pack'
-            if mission.is_file():
-                env['DNTTK_MISSION_ITEMS'] = str(mission)
-            font = campaign / 'ui/ttk-fonts.pack'
-            if font.is_file():
-                env['DNTTK_FONT_PACK'] = str(font)
+    if precision_supported and (a.campaign_art_preview or 'DNTTK_CAMPAIGN_ART' in env):
+        campaign_ui = ROOT / 'analysis/campaign-art/ui'
+        for name, variable in (
+            ('ttk-inv-icons.pack', 'DNTTK_INV_ICONS'),
+            ('ttk-mission-items.pack', 'DNTTK_MISSION_ITEMS'),
+            ('ttk-fonts.pack', 'DNTTK_FONT_PACK'),
+        ):
+            asset = campaign_ui / name
+            if asset.is_file():
+                env[variable] = str(asset)
 
     if modernized and not precision_supported and any(controls[k] == 'corrected' for k in ('geometry_precision','texture_precision')):
         print('Mesh precision requires OpenGL; this software-renderer session uses Original.', file=sys.stderr)
@@ -418,6 +423,11 @@ def run_with_session_log(command, env, keep=5):
             pass
     path = log_dir / datetime.datetime.now().strftime('session-%Y%m%d-%H%M%S.log')
     print(f'session log: {path}', flush=True)
+    if os.name == 'nt':
+        # Wait for the game process itself. Reading a redirected pipe to EOF
+        # can wait on a descendant that inherited its write handle.
+        with path.open('wb') as log:
+            return subprocess.call(command, cwd=ROOT, env=env, stderr=log)
     proc = subprocess.Popen(command, cwd=ROOT, env=env, stderr=subprocess.PIPE)
     try:
         with path.open('wb') as log:

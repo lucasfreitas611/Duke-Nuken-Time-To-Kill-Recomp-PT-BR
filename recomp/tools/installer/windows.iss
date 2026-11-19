@@ -21,6 +21,7 @@ SolidCompression=yes
 OutputDir={#StageDir}\..\installer
 OutputBaseFilename=DukeTTK-PTBR-{#ReleaseVersion}-Setup
 WizardStyle=modern
+SetupIconFile={#StageDir}\duke-ttk.ico
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\DukeTTK-PTBR.exe
 CloseApplications=yes
@@ -30,12 +31,15 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "__pycache__,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]
-Name: "{group}\Jogar Duke TTK PT-BR"; Filename: "{app}\DukeTTK-PTBR.exe"; Parameters: "--play"
+Name: "{group}\Duke Nuken TTK - Recomp"; Filename: "{app}\DukeTTK-PTBR.exe"; Parameters: "--play"
 Name: "{group}\Configurar Duke TTK PT-BR"; Filename: "{app}\DukeTTK-PTBR.exe"
-Name: "{autodesktop}\Jogar Duke TTK PT-BR"; Filename: "{app}\DukeTTK-PTBR.exe"; Parameters: "--play"; Tasks: desktopicon
+Name: "{autodesktop}\Duke Nuken TTK - Recomp"; Filename: "{app}\DukeTTK-PTBR.exe"; Parameters: "--play"; Tasks: desktopicon
+[InstallDelete]
+Type: files; Name: "{group}\Jogar Duke TTK PT-BR.lnk"
+Type: files; Name: "{autodesktop}\Jogar Duke TTK PT-BR.lnk"
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; Flags: unchecked
 [Run]
-Filename: "{app}\DukeTTK-PTBR.exe"; Description: "Verificar requisitos e preparar minha cópia USA"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\DukeTTK-PTBR.exe"; Description: "Abrir o assistente para escolher o disco do jogo"; Flags: nowait postinstall skipifsilent
 ; No UninstallDelete rule for user data: saves, profiles, imported disc and
 ; local compilation live outside {app}, in {localappdata}\DukeTTK-PTBR.

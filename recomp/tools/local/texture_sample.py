@@ -51,8 +51,10 @@ def decode(m, words, palette, version=1):
 
 def build(m, words, palette, pixels, version=1):
     if version not in (1,2,3): raise ValueError('unsupported specimen version')
-    validate(m,version)
-    decode(m, words, palette,version)  # validates source sizes too
+    ppw, pn = validate(m,version)
+    stride = (m['u']%ppw+m['w']+ppw-1)//ppw
+    if len(words) != stride*m['h'] or len(palette) != pn:
+        raise ValueError('source/CLUT word count mismatch')
     if len(pixels) != m['iw']*m['ih']*(4 if version==3 else 3):
         raise ValueError('replacement pixel size mismatch')
     return f'TTKTX{version:02}\0'.encode('ascii') + struct.pack('<11I', *(m[k] for k in FIELDS)) + struct.pack(f'<{len(words)+len(palette)}H', *words, *palette) + pixels
